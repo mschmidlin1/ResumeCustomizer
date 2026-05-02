@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "ts": "2026-05-02T21:11:39.994098+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4125,
+      "output_tokens": 3429,
+      "estimated_cost_usd": 0.06381
+    },
+    {
+      "ts": "2026-05-02T21:19:02.261359+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4125,
+      "output_tokens": 3481,
+      "estimated_cost_usd": 0.06459000000000001
+    },
+    {
+      "ts": "2026-05-02T21:22:40.764275+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4125,
+      "output_tokens": 3443,
+      "estimated_cost_usd": 0.06402
+    },
+    {
+      "ts": "2026-05-02T21:42:55.710147+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4299,
+      "output_tokens": 3340,
+      "estimated_cost_usd": 0.062997
+    },
+    {
+      "ts": "2026-05-02T21:58:12.269932+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4277,
+      "output_tokens": 3462,
+      "estimated_cost_usd": 0.064761
+    },
+    {
+      "ts": "2026-05-02T22:01:05.112696+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4277,
+      "output_tokens": 3418,
+      "estimated_cost_usd": 0.064101
+    },
+    {
+      "ts": "2026-05-02T22:19:17.258824+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4277,
+      "output_tokens": 3436,
+      "estimated_cost_usd": 0.064371
+    },
+    {
+      "ts": "2026-05-02T22:21:44.775708+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4487,
+      "output_tokens": 3413,
+      "estimated_cost_usd": 0.06465599999999999
+    },
+    {
+      "ts": "2026-05-02T22:28:59.970040+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4487,
+      "output_tokens": 3414,
+      "estimated_cost_usd": 0.06467099999999999
+    },
+    {
+      "ts": "2026-05-02T22:31:50.322619+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4668,
+      "output_tokens": 3372,
+      "estimated_cost_usd": 0.064584
+    },
+    {
+      "ts": "2026-05-02T22:35:47.131679+00:00",
+      "model": "claude-opus-4-6",
+      "input_tokens": 4668,
+      "output_tokens": 3552,
+      "estimated_cost_usd": 0.11214
+    }
+  ]
+}
