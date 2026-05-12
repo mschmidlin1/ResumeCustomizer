@@ -77,6 +77,20 @@
       "input_tokens": 4668,
       "output_tokens": 3552,
       "estimated_cost_usd": 0.11214
+    },
+    {
+      "ts": "2026-05-03T00:12:24.189678+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 4865,
+      "output_tokens": 3392,
+      "estimated_cost_usd": 0.065475
+    },
+    {
+      "ts": "2026-05-09T00:15:44.575122+00:00",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 5763,
+      "output_tokens": 4042,
+      "estimated_cost_usd": 0.07791899999999999
     }
   ]
 }
