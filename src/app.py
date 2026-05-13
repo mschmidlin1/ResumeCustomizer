@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import anthropic
@@ -17,13 +18,8 @@ from resume_customizer import (
     safe_filename_base,
     with_download_disambiguation,
 )
-from resume_customizer.cost_ledger import (
-    append_entry,
-    default_ledger_path,
-    ledger_entry_now,
-    load_ledger,
-    total_estimated_cost_usd,
-)
+from resume_customizer.cost_ledger import CostLedgerEntry, ledger_entry_now
+from resume_customizer.cost_ledger_mongo import CostLedgerMongoService
 from resume_customizer.pricing import combine_estimated_run_cost_usd, format_usd_display, model_has_list_price
 
 DEFAULT_PROMPT = """You are an expert resume editor. Given a LaTeX resume and a job description,
@@ -61,6 +57,25 @@ MODEL_OPTIONS: list[str] = [
     "claude-haiku-4-5",
     "claude-opus-4-6",
 ]
+
+
+@st.cache_resource
+def _cached_cost_ledger_mongo(uri: str, db: str) -> CostLedgerMongoService:
+    return CostLedgerMongoService.from_uri(uri, db)
+
+
+def _ledger_mongo_service() -> CostLedgerMongoService | None:
+    uri = (os.environ.get("MONGODB_URI") or os.environ.get("MONGO_URI") or "").strip()
+    if not uri:
+        return None
+    db = (os.environ.get("RESUME_CUSTOMIZER_DB") or "resume_customizer").strip()
+    return _cached_cost_ledger_mongo(uri, db)
+
+
+def _persist_ledger_entry(entry: CostLedgerEntry) -> None:
+    mongo = _ledger_mongo_service()
+    if mongo is not None:
+        mongo.add_document(entry)
 
 
 def _init_session_state() -> None:
@@ -217,11 +232,22 @@ def render_sidebar() -> None:
                 step=256,
             )
 
-        _ledger_path = default_ledger_path()
-        _ledger_entries = load_ledger(_ledger_path)
-        _total_spend = total_estimated_cost_usd(_ledger_entries)
+        _mongo = _ledger_mongo_service()
+        if _mongo is not None:
+            if not _mongo.ping():
+                st.warning("MongoDB is configured but not reachable; spend total may be unavailable.")
+            try:
+                _total_spend = _mongo.get_total()
+            except Exception as exc:
+                st.warning(f"Could not read spend total from MongoDB: {exc}")
+                _total_spend = 0.0
+            _src = "MongoDB"
+        else:
+            st.warning("Set **MONGODB_URI** or **MONGO_URI** to record and display API spend.")
+            _total_spend = 0.0
+            _src = "not configured"
         st.metric("Total est. API spend", format_usd_display(_total_spend))
-        st.caption("Estimated from each run’s token usage and list prices.")
+        st.caption(f"Estimated from each run’s token usage and list prices ({_src}).")
 
 
 def render_main() -> None:
@@ -319,8 +345,7 @@ def render_main() -> None:
                         repair_cost: float | None = None
                         repair_model: str | None = None
 
-                        append_entry(
-                            default_ledger_path(),
+                        _persist_ledger_entry(
                             ledger_entry_now(
                                 model=result.usage.model,
                                 input_tokens=result.usage.input_tokens,
@@ -373,8 +398,7 @@ def render_main() -> None:
                                         f"Keeping the first version (**{out_pages}** pages; target **{source_pages}**)."
                                     )
                                 else:
-                                    append_entry(
-                                        default_ledger_path(),
+                                    _persist_ledger_entry(
                                         ledger_entry_now(
                                             model=repair.usage.model,
                                             input_tokens=repair.usage.input_tokens,
@@ -492,7 +516,7 @@ def main() -> None:
         render_sign_in()
         return
 
-    # Main first so a successful Run appends to the ledger before the sidebar reads totals.
+    # Main first so a successful Run persists spend to MongoDB before the sidebar reads totals.
     render_main()
     render_sidebar()
 
