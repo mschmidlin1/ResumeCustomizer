@@ -64,18 +64,14 @@ def _cached_cost_ledger_mongo(uri: str, db: str) -> CostLedgerMongoService:
     return CostLedgerMongoService.from_uri(uri, db)
 
 
-def _ledger_mongo_service() -> CostLedgerMongoService | None:
-    uri = (os.environ.get("MONGODB_URI") or os.environ.get("MONGO_URI") or "").strip()
-    if not uri:
-        return None
+def _ledger_mongo_service() -> CostLedgerMongoService:
+    uri = os.environ["MONGODB_URI"].strip()
     db = (os.environ.get("RESUME_CUSTOMIZER_DB") or "resume_customizer").strip()
     return _cached_cost_ledger_mongo(uri, db)
 
 
 def _persist_ledger_entry(entry: CostLedgerEntry) -> None:
-    mongo = _ledger_mongo_service()
-    if mongo is not None:
-        mongo.add_document(entry)
+    _ledger_mongo_service().add_document(entry)
 
 
 def _init_session_state() -> None:
@@ -233,19 +229,8 @@ def render_sidebar() -> None:
             )
 
         _mongo = _ledger_mongo_service()
-        if _mongo is not None:
-            if not _mongo.ping():
-                st.warning("MongoDB is configured but not reachable; spend total may be unavailable.")
-            try:
-                _total_spend = _mongo.get_total()
-            except Exception as exc:
-                st.warning(f"Could not read spend total from MongoDB: {exc}")
-                _total_spend = 0.0
-            _src = "MongoDB"
-        else:
-            st.warning("Set **MONGODB_URI** or **MONGO_URI** to record and display API spend.")
-            _total_spend = 0.0
-            _src = "not configured"
+        _total_spend = _mongo.get_total()
+        _src = "MongoDB"
         st.metric("Total est. API spend", format_usd_display(_total_spend))
         st.caption(f"Estimated from each run’s token usage and list prices ({_src}).")
 
