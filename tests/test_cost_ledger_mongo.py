@@ -97,17 +97,21 @@ class TestCostLedgerMongoService(unittest.TestCase):
     def test_ping_true_with_mongomock(self) -> None:
         self.assertTrue(self._svc.ping())
 
-    @patch.dict(os.environ, {"MONGODB_URI": "", "MONGO_URI": ""}, clear=False)
-    def test_from_env_returns_none_without_uri(self) -> None:
-        self.assertIsNone(CostLedgerMongoService.from_env())
+    def test_from_env_raises_keyerror_when_mongodb_uri_missing(self) -> None:
+        with patch.dict(os.environ):
+            os.environ.pop("MONGODB_URI", None)
+            with self.assertRaises(KeyError):
+                CostLedgerMongoService.from_env()
 
 
 class TestImportLedgerCli(unittest.TestCase):
     """Smoke tests for import CLI exit codes."""
 
-    @patch.dict(os.environ, {"MONGODB_URI": "", "MONGO_URI": ""}, clear=False)
-    def test_main_returns_one_without_mongo_uri(self) -> None:
-        self.assertEqual(import_main([]), 1)
+    def test_main_raises_keyerror_when_mongodb_uri_missing(self) -> None:
+        with patch.dict(os.environ):
+            os.environ.pop("MONGODB_URI", None)
+            with self.assertRaises(KeyError):
+                import_main([])
 
 
 if __name__ == "__main__":

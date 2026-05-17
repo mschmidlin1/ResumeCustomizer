@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from resume_customizer.cost_ledger import default_ledger_path, load_ledger
@@ -21,9 +20,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     svc = CostLedgerMongoService.from_env()
-    if svc is None:
-        print("Set MONGODB_URI (or MONGO_URI) to import.", file=sys.stderr)
-        return 1
 
     path = args.ledger_path if args.ledger_path is not None else default_ledger_path()
     entries = load_ledger(path)

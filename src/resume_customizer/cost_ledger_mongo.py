@@ -18,9 +18,8 @@ from resume_customizer.cost_ledger import CostLedgerEntry
 _COLLECTION_NAME = "customization_cost_ledger"
 
 
-def _mongo_uri_from_env() -> str | None:
-    v = (os.environ.get("MONGODB_URI") or os.environ.get("MONGO_URI") or "").strip()
-    return v or None
+def _mongo_uri_from_env() -> str:
+    return os.environ["MONGODB_URI"].strip()
 
 
 def _database_name_from_env() -> str:
@@ -63,11 +62,8 @@ class CostLedgerMongoService:
         return cls(coll)
 
     @classmethod
-    def from_env(cls) -> CostLedgerMongoService | None:
-        uri = _mongo_uri_from_env()
-        if not uri:
-            return None
-        return cls.from_uri(uri, _database_name_from_env())
+    def from_env(cls) -> CostLedgerMongoService:
+        return cls.from_uri(_mongo_uri_from_env(), _database_name_from_env())
 
     @classmethod
     def from_client(cls, client: MongoClient, database: str) -> CostLedgerMongoService:
@@ -99,7 +95,16 @@ class CostLedgerMongoService:
     def get_total(self) -> float:
         """Sum ``estimated_cost_usd`` for documents with a numeric cost (skips null / missing)."""
         pipeline = [
-            {"$match": {"estimated_cost_usd": {"$type": ["double", "int", "long", "decimal"]}}},
+            {
+                "$match": {
+                    "$or": [
+                        {"estimated_cost_usd": {"$type": "double"}},
+                        {"estimated_cost_usd": {"$type": "int"}},
+                        {"estimated_cost_usd": {"$type": "long"}},
+                        {"estimated_cost_usd": {"$type": "decimal"}},
+                    ]
+                }
+            },
             {"$group": {"_id": None, "total": {"$sum": "$estimated_cost_usd"}}},
         ]
         agg = list(self._coll.aggregate(pipeline))
