@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resume-customizer
+  namespace: resume-customizer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: resume-customizer
+  template:
+    metadata:
+      labels:
+        app: resume-customizer
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/mschmidlin1/resume-customizer:latest
+          ports:
+            - containerPort: 8501
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: resume-customizer-secrets
+                  key: MONGODB_URI
+            - name: RESUME_CUSTOMIZER_DB
+              valueFrom:
+                secretKeyRef:
+                  name: resume-customizer-secrets
+                  key: RESUME_CUSTOMIZER_DB
+          volumeMounts:
+            - name: streamlit-secrets
+              mountPath: /app/.streamlit/secrets.toml
+              subPath: secrets.toml
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: streamlit-secrets
+          secret:
+            secretName: resume-customizer-secrets
+            items:
+              - key: secrets.toml
+                path: secrets.toml

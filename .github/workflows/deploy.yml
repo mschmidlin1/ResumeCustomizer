@@ -1,0 +1,57 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    env:
+      KUBECONFIG: /home/mike/.kube/config
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          IMAGE=ghcr.io/mschmidlin1/resume-customizer
+          docker build -t "${IMAGE}:${{ github.sha }}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Apply Kubernetes Secret
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          RESUME_CUSTOMIZER_DB: ${{ secrets.RESUME_CUSTOMIZER_DB }}
+          APP_AUTH_PASSWORD: ${{ secrets.APP_AUTH_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          kubectl -n resume-customizer create secret generic resume-customizer-secrets \
+            --from-literal=MONGODB_URI="$MONGODB_URI" \
+            --from-literal=RESUME_CUSTOMIZER_DB="$RESUME_CUSTOMIZER_DB" \
+            --from-literal=secrets.toml="$(printf '[auth]\npassword = "%s"\n\n[anthropic]\napi_key = "%s"\n' "$APP_AUTH_PASSWORD" "$ANTHROPIC_API_KEY")" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply Kubernetes manifests
+        run: kubectl apply -k k8s/
+
+      - name: Roll out new image
+        run: |
+          kubectl set image deployment/resume-customizer \
+            app=ghcr.io/mschmidlin1/resume-customizer:${{ github.sha }} \
+            -n resume-customizer
+          kubectl rollout status deployment/resume-customizer \
+            -n resume-customizer \
+            --timeout=10m
