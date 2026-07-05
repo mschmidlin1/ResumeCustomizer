@@ -105,7 +105,7 @@ These items exist in the repo and do **not** need to be recreated for production
 
 **Everything below is still to do.**
 
-### Confirmed decisions
+### Assumptions
 
 | Topic | Choice |
 |-------|--------|
@@ -127,7 +127,7 @@ These items exist in the repo and do **not** need to be recreated for production
 | **3** | Register a self-hosted runner for **this** repo | Valhalla |
 | **4** | Add `.github/workflows/deploy.yml` | This repo |
 | **5** | GitHub Actions permissions, secrets, GHCR visibility | GitHub |
-| **6** | Push to `main` — first automated deploy | CI → Valhalla |
+| **6** | Push to `main` and verify first deploy | CI → Valhalla |
 | **7** | Cloudflare Tunnel public hostname for `customizer.schmidlin.casa` | Cloudflare |
 | **8** | Verify end-to-end | Browser / CLI |
 
@@ -260,61 +260,122 @@ mongosh "mongodb://vanaheim.lan:27017" --eval 'db.runCommand({ ping: 1 })'
 
 ### 0.7 Confirm k3s pods can resolve `vanaheim.lan`
 
-The Streamlit pod runs inside k3s on Valhalla and must resolve `vanaheim.lan` the same way the host does. Test from a throwaway pod:
+The Streamlit pod runs inside k3s on Valhalla and must resolve `vanaheim.lan` the same way the host does.
+
+#### Step 1 — Test DNS from a pod
+
+On **Valhalla**:
 
 ```bash
-# On Valhalla
-kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- \
+kubectl run dns-test --rm -i --restart=Never --image=busybox:1.36 -- \
   nslookup vanaheim.lan
 ```
 
+Success looks like an `Address:` line with Vanaheim's LAN IP (e.g. `192.168.50.240`).
+
+> **Pod test tips:** Use `--rm -i` (not `--rm` alone — recent `kubectl` requires an attached session for `--rm`). Do **not** use `curl telnet://…` with `-it`; it opens an interactive session and appears to hang. If a prior test pod still exists, delete it first: `kubectl delete pod dns-test --force --grace-period=0`.
+
 If this **fails** but `getent hosts vanaheim.lan` works on the Valhalla host, k3s CoreDNS is not forwarding `.lan` to your router. Fix options (pick one):
 
-1. **CoreDNS hosts stub (simplest for one hostname)** — add a static entry. On Valhalla:
+#### Step 2 — Fix CoreDNS (option 1: hosts stub — recommended)
 
-   ```bash
-   VANAHEIM_IP=$(getent hosts vanaheim.lan | awk '{print $1}')
-   kubectl -n kube-system edit configmap coredns
-   ```
+k3s ships CoreDNS with an **existing** `hosts /etc/coredns/NodeHosts { … }` block. CoreDNS allows only **one** `hosts` plugin per server block — do **not** add a second `hosts { … }` stanza (that crashes CoreDNS with `plugin/hosts: this plugin can only be used once per Server Block`).
 
-   Inside the `Corefile`, under the `.:53` block, add a `hosts` stanza **before** the `forward` line (replace `192.168.x.x` with the IP from `getent hosts vanaheim.lan`):
-
-   ```text
-   hosts {
-     192.168.x.x vanaheim.lan
-     fallthrough
-   }
-   ```
-
-   Save, then restart CoreDNS:
-
-   ```bash
-   kubectl -n kube-system rollout restart deployment coredns
-   ```
-
-2. **Forward `.lan` to your router** — edit the CoreDNS `forward` plugin to send `.lan` queries to your router's LAN IP (often the default gateway).
-
-Re-test with the `dns-test` pod until `nslookup vanaheim.lan` succeeds, then test Mongo from a pod:
+**Export the ConfigMap and edit in your editor** (avoid `kubectl edit`, which opens `vim` on the server):
 
 ```bash
-kubectl run mongo-test --rm -it --restart=Never --image=curlimages/curl -- \
-  curl -v telnet://vanaheim.lan:27017
+# On Valhalla
+VANAHEIM_IP=$(getent hosts vanaheim.lan | awk '{print $1}')
+kubectl -n kube-system get configmap coredns -o yaml > ~/coredns-configmap.yaml
 ```
 
-Look for `Connected` in the output.
+Edit `~/coredns-configmap.yaml` with **nano** (`nano ~/coredns-configmap.yaml`) or open the file in **VS Code / Cursor via Remote SSH**. Do not use `open` on the server — there is no GUI display over SSH.
 
-### 0.8 Production connection strings
+Inside `data` → `Corefile`, add the hostname **inside the existing** `hosts /etc/coredns/NodeHosts` block (use `$VANAHEIM_IP` or your actual IP):
 
-These values go into **GitHub Actions secrets** (Phase 5):
+```text
+.:53 {
+    errors
+    health
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+      pods insecure
+      fallthrough in-addr.arpa ip6.arpa
+    }
+    hosts /etc/coredns/NodeHosts {
+      192.168.50.240 vanaheim.lan
+      ttl 60
+      reload 15s
+      fallthrough
+    }
+    prometheus :9153
+    cache 30
+    loop
+    reload
+    loadbalance
+    import /etc/coredns/custom/*.override
+    forward . /etc/resolv.conf
+}
+import /etc/coredns/custom/*.server
+```
 
-| Setting | Value |
-|---------|-------|
-| `MONGODB_URI` | `mongodb://vanaheim.lan:27017` |
-| `RESUME_CUSTOMIZER_DB` | `resume_customizer` |
+Checklist while editing:
 
-Mongo creates the `resume_customizer` database and `customization_cost_ledger` collection on first write.
+- Add `IP vanaheim.lan` **inside** `hosts /etc/coredns/NodeHosts { … }` — not as a separate `hosts { … }` block.
+- Keep `forward . /etc/resolv.conf` exactly as shown (**space** between `.` and `/etc`).
+- Preserve YAML indentation under `Corefile: |`.
 
-### 0.9 Migrate the cost ledger to Vanaheim
+Before applying, **delete the `resourceVersion:` line** under `metadata` (stale values cause `Operation cannot be fulfilled … please apply your changes to the latest version`). In nano: **Ctrl+W** → `resourceVersion` → **Ctrl+K** to delete the line.
+
+Or strip it in one command:
+
+```bash
+grep -v 'resourceVersion:' ~/coredns-configmap.yaml > ~/coredns-configmap-apply.yaml
+```
+
+Apply and restart CoreDNS:
+
+```bash
+kubectl apply -f ~/coredns-configmap-apply.yaml   # or ~/coredns-configmap.yaml if you removed resourceVersion manually
+kubectl -n kube-system rollout restart deployment coredns
+kubectl -n kube-system rollout status deployment/coredns
+kubectl -n kube-system get pods -l k8s-app=kube-dns   # expect 1/1 Running, not CrashLoopBackOff
+```
+
+If CoreDNS is in `CrashLoopBackOff`, check logs: `kubectl -n kube-system logs -l k8s-app=kube-dns --tail=20`.
+
+**Option 2 — Forward `.lan` to your router** — edit the CoreDNS `forward` plugin to send `.lan` queries to your router's LAN IP (often the default gateway). Use the same export → edit → apply workflow above.
+
+#### Step 3 — Re-test DNS from a pod
+
+```bash
+kubectl run dns-test --rm -i --restart=Never --image=busybox:1.36 -- \
+  nslookup vanaheim.lan
+```
+
+Repeat Step 2 until `nslookup` returns Vanaheim's IP.
+
+#### Step 4 — Test Mongo from host, then from a pod
+
+On the **Valhalla host**:
+
+```bash
+nc -zv vanaheim.lan 27017
+```
+
+From a **pod** (uses `busybox` `nc`; exits immediately unlike `curl telnet://`):
+
+```bash
+kubectl delete pod mongo-test --force --grace-period=0 2>/dev/null || true
+kubectl run mongo-test --rm -i --restart=Never --image=busybox:1.36 -- \
+  nc -zv -w 5 vanaheim.lan 27017
+```
+
+Success looks like: `vanaheim.lan (192.168.50.240:27017) open`.
+
+If host `nc` works but the pod test times out, Vanaheim `firewalld` may be blocking pod egress — see §0.6 (allow TCP 27017 from Valhalla's LAN IP only; k3s SNAT usually presents pod traffic as that IP).
+
+### 0.8 Migrate the cost ledger to Vanaheim
 
 Migrate existing ledger rows **after** Mongo on Vanaheim is running and reachable. You can import from the JSON file in the repo, from dev Mongo on your Windows PC, or both (duplicates are skipped by dedupe key).
 
@@ -366,20 +427,9 @@ Confirm the count matches what you expect from dev.
 
 ## Phase 2 — Kubernetes manifests
 
-Create a `k8s/` directory on Valhalla's cluster. Do **not** add `cloudflared` here — the tunnel is cluster-wide infrastructure from Valhalla.
+In this repo, create a `k8s/` directory with four files: `namespace.yaml`, `deployment.yaml`, `service.yaml`, and `kustomization.yaml`. Do **not** add `cloudflared` here — the tunnel is cluster-wide infrastructure from Valhalla. The in-cluster Secret is created by CI (Phase 4); see [Appendix — Kubernetes Secret shape](#appendix--kubernetes-secret-shape).
 
-### 2.1 Directory layout
-
-```text
-k8s/
-  namespace.yaml
-  deployment.yaml
-  service.yaml
-  kustomization.yaml
-  secret.example.yaml    # documentation only; real Secret is created by CI
-```
-
-### 2.2 `k8s/namespace.yaml`
+### 2.1 `k8s/namespace.yaml`
 
 ```yaml
 apiVersion: v1
@@ -388,7 +438,7 @@ metadata:
   name: resume-customizer
 ```
 
-### 2.3 `k8s/deployment.yaml`
+### 2.2 `k8s/deployment.yaml`
 
 ```yaml
 apiVersion: apps/v1
@@ -457,7 +507,7 @@ spec:
 
 Probe `initialDelaySeconds` are higher than Dr. JAM's because the TeX Live image is large and Streamlit needs time to start.
 
-### 2.4 `k8s/service.yaml`
+### 2.3 `k8s/service.yaml`
 
 ```yaml
 apiVersion: v1
@@ -476,7 +526,7 @@ spec:
 
 The Service listens on port **80** so the Cloudflare Tunnel URL matches the Dr. JAM pattern (`...svc.cluster.local:80`).
 
-### 2.5 `k8s/kustomization.yaml`
+### 2.4 `k8s/kustomization.yaml`
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -488,28 +538,7 @@ resources:
   - service.yaml
 ```
 
-### 2.6 `k8s/secret.example.yaml` (documentation only)
-
-```yaml
-# NOT applied directly — CI creates this Secret from GitHub Actions secrets.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: resume-customizer-secrets
-  namespace: resume-customizer
-type: Opaque
-stringData:
-  MONGODB_URI: "mongodb://vanaheim.lan:27017"
-  RESUME_CUSTOMIZER_DB: "resume_customizer"
-  secrets.toml: |
-    [auth]
-    password = "<APP_AUTH_PASSWORD>"
-
-    [anthropic]
-    api_key = "<ANTHROPIC_API_KEY>"
-```
-
-### 2.7 Apply once manually (optional)
+### 2.5 Apply once manually (optional)
 
 On Valhalla, after manifests exist locally:
 
@@ -525,8 +554,6 @@ The pod will not reach **Running** until (a) an image exists on GHCR and (b) the
 ## Phase 3 — Self-hosted GitHub Actions runner on Valhalla
 
 Runners are registered **per repository**. Even if Valhalla already has runners for Valhalla Landing Page or Dr. JAM, you need a **separate** runner for Resume Customizer.
-
-### 3.1 Register the runner
 
 1. Open [github.com/mschmidlin1/ResumeCustomizer/settings/actions/runners](https://github.com/mschmidlin1/ResumeCustomizer/settings/actions/runners).
 2. Click **New self-hosted runner** → **Linux** → **x64**.
@@ -546,11 +573,9 @@ Runners are registered **per repository**. Even if Valhalla already has runners 
    sudo ./svc.sh status
    ```
 
+7. Return to **Settings → Actions → Runners** and confirm the new runner shows **Idle** or **Active**.
+
 Ensure the runner user is in the `docker` group and has `~/.kube/config` (same as Valhalla / Dr. JAM — see [Valhalla KubernetesSetup.md §1.3](https://github.com/mschmidlin1/ValhallaLandingPage/blob/main/docs/KubernetesSetup.md)).
-
-### 3.2 Confirm on GitHub
-
-Return to **Settings → Actions → Runners**. The new runner should show **Idle** or **Active**.
 
 ---
 
@@ -634,14 +659,16 @@ The rollout timeout is **10 minutes** to allow for the heavy TeX Live layer on f
 
 ### 5.2 Repository secrets
 
-**Settings → Secrets and variables → Actions → New repository secret:**
+The deploy workflow (Phase 4) reads these secrets and creates the in-cluster `resume-customizer-secrets` object. Add each one at **Settings → Secrets and variables → Actions → New repository secret**:
 
-| Secret | Example / notes |
-|--------|-----------------|
+| Secret | Value |
+|--------|-------|
 | `MONGODB_URI` | `mongodb://vanaheim.lan:27017` |
 | `RESUME_CUSTOMIZER_DB` | `resume_customizer` |
-| `APP_AUTH_PASSWORD` | Streamlit sign-in password (plain text) |
+| `APP_AUTH_PASSWORD` | Streamlit sign-in password (choose a value) |
 | `ANTHROPIC_API_KEY` | Your Claude API key (`sk-ant-...`) |
+
+Mongo creates the `resume_customizer` database and `customization_cost_ledger` collection on first write — no manual database setup required. The deploy workflow assembles these into a Kubernetes Secret; see [Appendix — Kubernetes Secret shape](#appendix--kubernetes-secret-shape).
 
 ### 5.3 GHCR package visibility (after first successful deploy)
 
@@ -652,55 +679,55 @@ After the first workflow run pushes an image:
 
 ---
 
-## Phase 6 — First automated deploy
+## Phase 6 — First deploy and verify
 
 1. Commit Phases 2 and 4 files and push to **`main`** (or merge a PR).
-2. Open [github.com/mschmidlin1/ResumeCustomizer/actions](https://github.com/mschmidlin1/ResumeCustomizer/actions).
-3. Confirm each step passes:
+
+2. Open [github.com/mschmidlin1/ResumeCustomizer/actions](https://github.com/mschmidlin1/ResumeCustomizer/actions) and confirm each workflow step passes:
    - **Build and push image** — may take several minutes on first run (TeX Live)
    - **Apply Kubernetes Secret**
    - **Apply Kubernetes manifests**
    - **Roll out new image** — pod reaches Ready
 
-On Valhalla:
+3. On Valhalla, confirm the pod is running:
 
-```bash
-kubectl get pods -n resume-customizer
-```
+   ```bash
+   kubectl get pods -n resume-customizer
+   ```
 
-Expected: **STATUS** `Running`, **READY** `1/1`.
+   Expected: **STATUS** `Running`, **READY** `1/1`.
 
-```bash
-kubectl get pods -n resume-customizer -o jsonpath='{.items[0].spec.containers[0].image}{"\n"}'
-```
+4. Confirm the deployed image tag:
 
-Expected: `ghcr.io/mschmidlin1/resume-customizer:<commit-sha>`.
+   ```bash
+   kubectl get pods -n resume-customizer -o jsonpath='{.items[0].spec.containers[0].image}{"\n"}'
+   ```
 
-**In-cluster HTTP check (no public URL yet):**
+   Expected: `ghcr.io/mschmidlin1/resume-customizer:<commit-sha>`.
 
-```bash
-kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- \
-  curl -s -o /dev/null -w "HTTP %{http_code}\n" \
-  http://resume-customizer.resume-customizer.svc.cluster.local:80/_stcore/health
-```
+5. Run an in-cluster health check (no public URL yet):
 
-Expected: `HTTP 200`.
+   ```bash
+   kubectl run curl-test --rm -it --restart=Never --image=curlimages/curl -- \
+     curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+     http://resume-customizer.resume-customizer.svc.cluster.local:80/_stcore/health
+   ```
 
-**Mongo connectivity from the pod:**
+   Expected: `HTTP 200`.
 
-```bash
-kubectl logs -n resume-customizer deploy/resume-customizer --tail=50
-```
+6. Check app logs for Mongo connectivity:
 
-If Mongo is unreachable from Valhalla/Vanaheim, the app may fail at runtime when the cost ledger is accessed — fix Phase 0 firewall/routing before continuing.
+   ```bash
+   kubectl logs -n resume-customizer deploy/resume-customizer --tail=50
+   ```
+
+   If Mongo is unreachable from Valhalla/Vanaheim, the app may fail at runtime when the cost ledger is accessed — fix Phase 0 firewall/routing before continuing.
 
 ---
 
 ## Phase 7 — Cloudflare Tunnel route for `customizer.schmidlin.casa`
 
 The app runs in the cluster but is not public until you add a **Public Hostname** on the **existing** homelab tunnel. Do **not** create a second tunnel.
-
-### 7.1 Add the public hostname
 
 1. Open [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels**.
 2. Click your existing tunnel (e.g. `homelab-k3s`). Confirm status **Healthy**.
@@ -715,14 +742,8 @@ The app runs in the cluster but is not public until you add a **Public Hostname*
 | **Type** | `HTTP` |
 | **URL** | `http://resume-customizer.resume-customizer.svc.cluster.local:80` |
 
-5. Save.
-
-Cloudflare creates a proxied DNS record for `customizer.schmidlin.casa` automatically.
-
-### 7.2 Confirm DNS
-
-1. [Cloudflare Dashboard](https://dash.cloudflare.com) → **`schmidlin.casa`** → **DNS** → **Records**.
-2. You should see **`customizer`** (proxied, orange cloud) pointing at the tunnel.
+5. Save. Cloudflare creates a proxied DNS record for `customizer.schmidlin.casa` automatically.
+6. Open [Cloudflare Dashboard](https://dash.cloudflare.com) → **`schmidlin.casa`** → **DNS** → **Records** and confirm **`customizer`** (proxied, orange cloud) points at the tunnel.
 
 You should already have **`www`** (Valhalla), **`dr-jam`**, and possibly **`dev`** on the same tunnel.
 
@@ -827,8 +848,8 @@ On **aarch64**, use the `aarch64` path in `baseurl` instead of `x86_64`.
 Test from a pod:
 
 ```bash
-kubectl run mongo-test --rm -it --restart=Never -n resume-customizer --image=curlimages/curl -- \
-  curl -v telnet://vanaheim.lan:27017
+kubectl run mongo-test --rm -i --restart=Never -n resume-customizer --image=busybox:1.36 -- \
+  nc -zv -w 5 vanaheim.lan 27017
 ```
 
 ### `Apply Kubernetes manifests` fails with KUBECONFIG error
@@ -883,8 +904,8 @@ Expected on first run due to TeX Live in the Docker image. Later deploys reuse D
 - [ ] Vanaheim `bindIp` set and `firewalld` allows **Valhalla → :27017** only
 - [ ] Connectivity verified from Valhalla (`nc` or `mongosh` to `vanaheim.lan`)
 - [ ] k3s pods can resolve `vanaheim.lan` and reach Mongo (Phase 0 §0.7)
-- [ ] Cost ledger migrated to Vanaheim (Phase 0 §0.9)
-- [ ] `k8s/` manifests committed (namespace, deployment, service, kustomization, secret.example)
+- [ ] Cost ledger migrated to Vanaheim (Phase 0 §0.8)
+- [ ] `k8s/` manifests committed (namespace, deployment, service, kustomization)
 - [ ] Self-hosted runner registered for Resume Customizer on **Valhalla** (Idle/Active)
 - [ ] `.github/workflows/deploy.yml` committed on `main`
 - [ ] GitHub Actions workflow permissions set to read/write
@@ -897,6 +918,30 @@ Expected on first run due to TeX Live in the Docker image. Later deploys reuse D
 - [ ] `curl -I https://customizer.schmidlin.casa` → 200
 - [ ] Browser: sign-in, customization, PDF download, and Mongo-backed ledger all work
 - [ ] *(Optional)* Valhalla landing page link added
+
+---
+
+## Appendix — Kubernetes Secret shape
+
+The deploy workflow (Phase 4) creates `resume-customizer-secrets` from GitHub Actions secrets (Phase 5.2). For reference only — **do not** `kubectl apply` this in production:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: resume-customizer-secrets
+  namespace: resume-customizer
+type: Opaque
+stringData:
+  MONGODB_URI: "mongodb://vanaheim.lan:27017"
+  RESUME_CUSTOMIZER_DB: "resume_customizer"
+  secrets.toml: |
+    [auth]
+    password = "<APP_AUTH_PASSWORD>"
+
+    [anthropic]
+    api_key = "<ANTHROPIC_API_KEY>"
+```
 
 ---
 
