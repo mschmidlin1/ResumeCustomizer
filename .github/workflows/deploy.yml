@@ -31,6 +31,9 @@ jobs:
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
 
+      - name: Apply Kubernetes manifests
+        run: kubectl apply -k k8s/
+
       - name: Apply Kubernetes Secret
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
@@ -43,9 +46,6 @@ jobs:
             --from-literal=RESUME_CUSTOMIZER_DB="$RESUME_CUSTOMIZER_DB" \
             --from-literal=secrets.toml="$(printf '[auth]\npassword = "%s"\n\n[anthropic]\napi_key = "%s"\n' "$APP_AUTH_PASSWORD" "$ANTHROPIC_API_KEY")" \
             --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Apply Kubernetes manifests
-        run: kubectl apply -k k8s/
 
       - name: Roll out new image
         run: |
