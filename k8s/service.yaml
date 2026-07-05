@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: resume-customizer
+  namespace: resume-customizer
+spec:
+  type: ClusterIP
+  selector:
+    app: resume-customizer
+  ports:
+    - port: 80
+      targetPort: 8501
