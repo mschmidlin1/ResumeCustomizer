@@ -197,7 +197,7 @@ class GoogleEditor:
                 st.session_state.google_oauth_code_verifier = flow.code_verifier
                 st.session_state.google_auth_url = auth_url
             render_connect_google_button(st.session_state.google_auth_url)
-            st.caption("Uses your Google account. The app password and Claude key stay the same.")
+            
             return None
 
         email = st.session_state.get("google_email") or "Google account"
