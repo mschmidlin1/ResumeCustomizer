@@ -32,7 +32,7 @@ class CustomizationPayload:
 
 
 def extract_json_object_text(text: str) -> str:
-    """Strip optional Markdown code fences and surrounding whitespace from model text.
+    """Strip optional Markdown fences and isolate the first JSON object.
 
     Args:
         text: Raw assistant message body, optionally wrapped in a fenced code block.
@@ -49,9 +49,25 @@ def extract_json_object_text(text: str) -> str:
 
     fence = _JSON_FENCE_PATTERN.search(raw)
     if fence:
-        return fence.group(1).strip()
+        inner = fence.group(1).strip()
+        if inner:
+            raw = inner
 
+    if raw.startswith("{") and raw.endswith("}"):
+        return raw
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        return raw[start : end + 1]
     return raw
+
+
+def _preview(text: str, *, limit: int = 240) -> str:
+    """Compact snippet for parse-error messages."""
+    snippet = " ".join((text or "").split())
+    if len(snippet) > limit:
+        return snippet[: limit - 3] + "..."
+    return snippet
 
 
 def parse_customization_payload(text: str) -> CustomizationPayload:
@@ -109,7 +125,9 @@ def _load_json_object(text: str) -> Mapping[str, Any]:
     try:
         data: Any = json.loads(json_text)
     except json.JSONDecodeError as exc:
-        raise CustomizationParseError(f"Invalid JSON in model response: {exc}") from exc
+        raise CustomizationParseError(
+            f"Invalid JSON in model response: {exc}. Preview: {_preview(json_text)!r}"
+        ) from exc
     if not isinstance(data, Mapping):
         raise CustomizationParseError("Model JSON must be an object.")
     return data

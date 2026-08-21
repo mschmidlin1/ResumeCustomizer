@@ -31,6 +31,12 @@ class TestExtractJsonObjectText(unittest.TestCase):
         self.assertTrue(inner.startswith("{"))
         self.assertIn("Role", inner)
 
+    def test_json_embedded_in_prose(self) -> None:
+        """A JSON object wrapped in extra text is still extracted."""
+        body = 'Sure, here you go:\n{"job_title": "Role", "replacements": []}\nThanks!'
+        inner = extract_json_object_text(body)
+        self.assertEqual(inner, '{"job_title": "Role", "replacements": []}')
+
     def test_empty_raises(self) -> None:
         """Empty assistant text raises :class:`CustomizationParseError`."""
         with self.assertRaises(CustomizationParseError):

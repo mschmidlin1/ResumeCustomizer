@@ -60,6 +60,27 @@ _JSON_REPLACEMENTS_SUFFIX = (
     'and non-empty string "text").'
 )
 
+REPLACEMENT_JSON_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["job_title", "replacements"],
+    "properties": {
+        "job_title": {"type": "string"},
+        "replacements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["block_id", "text"],
+                "properties": {
+                    "block_id": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
 _CONDENSE_SUFFIX = (
     "\n\nAdditional instructions for this turn only: The Google Doc currently exports to too many PDF pages. "
     "Revise RESUME_BLOCKS so that a PDF export has at most TARGET_PDF_PAGE_COUNT pages "
@@ -138,6 +159,7 @@ def _call_replacements(
         model=settings.model,
         max_tokens=int(settings.max_tokens),
         temperature=float(settings.temperature),
+        json_schema=REPLACEMENT_JSON_SCHEMA,
     )
     return parse_replacement_payload(raw), usage
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 import anthropic
 from anthropic.types import Message
@@ -177,6 +179,7 @@ class ClaudeCustomizationService:
         model: str,
         max_tokens: int,
         temperature: float,
+        json_schema: Mapping[str, Any] | None = None,
     ) -> tuple[str, CustomizationUsage]:
         """Call the Messages API and return assistant text plus usage.
 
@@ -186,6 +189,8 @@ class ClaudeCustomizationService:
             model: Anthropic model id.
             max_tokens: Maximum tokens for the assistant reply.
             temperature: Sampling temperature in ``[0, 1]``.
+            json_schema: Optional JSON Schema to constrain the reply (SDK 1.x
+                ``output_config``). Ignored when the installed SDK has no such parameter.
 
         Returns:
             Raw assistant text and usage summary.
@@ -194,36 +199,83 @@ class ClaudeCustomizationService:
             anthropic.APIError: On transport or API-level failures from the SDK.
             ValueError: If the reply has no text blocks.
         """
-        message = _create_message(
-            self._client,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_text,
-            messages=[{"role": "user", "content": user_content}],
-        )
+        try:
+            return self._complete_json_once(
+                system_text=system_text,
+                user_content=user_content,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_schema=json_schema,
+            )
+        except anthropic.APIError as exc:
+            if json_schema is not None and int(getattr(exc, "status_code", 0) or 0) == 400:
+                return self._complete_json_once(
+                    system_text=system_text,
+                    user_content=user_content,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    json_schema=None,
+                )
+            raise
+
+    def _complete_json_once(
+        self,
+        *,
+        system_text: str,
+        user_content: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        json_schema: Mapping[str, Any] | None,
+    ) -> tuple[str, CustomizationUsage]:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": system_text,
+            "messages": [{"role": "user", "content": user_content}],
+        }
+        if json_schema is not None:
+            kwargs["output_config"] = {
+                "format": {"type": "json_schema", "schema": dict(json_schema)},
+            }
+        message = _create_message(self._client, **kwargs)
         raw_text = _extract_text_block(message)
         usage = _usage_from_message(model=model, message=message)
         return raw_text, usage
 
 
-def _create_message(client: anthropic.Anthropic, **kwargs: object) -> Message:
-    """Call ``messages.create``, mapping ``temperature`` for Anthropic SDK 1.x.
+def _create_message(client: anthropic.Anthropic, **kwargs: Any) -> Message:
+    """Call ``messages.create``, moving unsupported kwargs into ``extra_body``.
 
     SDK 0.x accepts ``temperature=`` on ``messages.create``. SDK 1.x removed that
     keyword; the Messages HTTP API still accepts it via ``extra_body``.
     """
     create = client.messages.create
+    extra = dict(kwargs.pop("extra_body", None) or {})
     try:
-        return create(**kwargs)
-    except TypeError as exc:
-        if "temperature" not in str(exc) or "temperature" not in kwargs:
-            raise
-        temperature = kwargs.pop("temperature")
-        extra = dict(kwargs.get("extra_body") or {})  # type: ignore[arg-type]
-        extra["temperature"] = temperature
+        parameters = inspect.signature(create).parameters
+        named = {
+            name
+            for name, param in parameters.items()
+            if param.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        }
+        accepts_var = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
+        )
+    except (TypeError, ValueError):
+        named = set()
+        accepts_var = True
+    if not accepts_var:
+        for key in list(kwargs):
+            if key not in named:
+                extra[key] = kwargs.pop(key)
+    if extra:
         kwargs["extra_body"] = extra
-        return create(**kwargs)
+    return create(**kwargs)
 
 
 def _build_user_message(
@@ -299,9 +351,15 @@ def _extract_text_block(message: Message) -> str:
         ValueError: If there is no text content in the response.
     """
     parts: list[str] = []
+    thinking_parts: list[str] = []
     for block in message.content:
-        if block.type == "text":
+        btype = getattr(block, "type", None)
+        if btype == "text" and getattr(block, "text", None):
             parts.append(block.text)
-    if not parts:
-        raise ValueError("Anthropic response contained no text blocks.")
-    return "".join(parts).strip()
+        elif btype == "thinking" and getattr(block, "thinking", None):
+            thinking_parts.append(str(block.thinking))
+    if parts:
+        return "".join(parts).strip()
+    if thinking_parts:
+        return "".join(thinking_parts).strip()
+    raise ValueError("Anthropic response contained no text blocks.")

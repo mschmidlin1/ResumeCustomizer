@@ -148,10 +148,20 @@ class TestClaudeCustomizationService(unittest.TestCase):
     def test_complete_json_maps_temperature_when_sdk_rejects_kwarg(self, mock_anthropic: MagicMock) -> None:
         """Anthropic SDK 1.x dropped ``temperature=``; send it in ``extra_body``."""
         instance = mock_anthropic.return_value
-        instance.messages.create.side_effect = [
-            TypeError("Messages.create() got an unexpected keyword argument 'temperature'"),
-            _fake_message('{"job_title": "A", "customized_latex": "B"}'),
-        ]
+        captured: dict[str, object] = {}
+
+        def _sdk1_create(
+            *,
+            max_tokens: int,
+            messages: object,
+            model: str,
+            system: str = "",
+            extra_body: dict | None = None,
+        ) -> SimpleNamespace:
+            captured["extra_body"] = extra_body
+            return _fake_message('{"job_title": "A", "customized_latex": "B"}')
+
+        instance.messages.create = _sdk1_create
 
         service = ClaudeCustomizationService(api_key="k")
         raw, usage = service.complete_json(
@@ -164,10 +174,31 @@ class TestClaudeCustomizationService(unittest.TestCase):
 
         self.assertEqual(raw, '{"job_title": "A", "customized_latex": "B"}')
         self.assertEqual(usage.model, "claude-sonnet-4-6")
-        self.assertEqual(instance.messages.create.call_count, 2)
-        retry_kw = instance.messages.create.call_args.kwargs
-        self.assertNotIn("temperature", retry_kw)
-        self.assertEqual(retry_kw["extra_body"]["temperature"], 0.45)
+        extra_body = captured["extra_body"]
+        assert isinstance(extra_body, dict)
+        self.assertEqual(extra_body["temperature"], 0.45)
+
+    @patch("resume_customizer.claude_service.anthropic.Anthropic")
+    def test_complete_json_sends_output_config_schema(self, mock_anthropic: MagicMock) -> None:
+        """Google replacements pass a JSON schema when the SDK supports it."""
+        instance = mock_anthropic.return_value
+        instance.messages.create.return_value = _fake_message(
+            '{"job_title": "A", "replacements": []}',
+        )
+
+        service = ClaudeCustomizationService(api_key="k")
+        service.complete_json(
+            system_text="S",
+            user_content="U",
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            temperature=0.2,
+            json_schema={"type": "object"},
+        )
+
+        call_kw = instance.messages.create.call_args.kwargs
+        self.assertEqual(call_kw["output_config"]["format"]["type"], "json_schema")
+        self.assertEqual(call_kw["output_config"]["format"]["schema"], {"type": "object"})
 
 
 if __name__ == "__main__":
