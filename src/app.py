@@ -6,6 +6,7 @@ import os
 
 import streamlit as st
 
+from resume_customizer.browser_auth import restore_from_cookies, sync_cookies
 from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.cost_ledger import CostLedgerEntry, ledger_entry_now
 from resume_customizer.cost_ledger_mongo import CostLedgerMongoService
@@ -47,6 +48,7 @@ def _init_session_state() -> None:
     """Initialize Streamlit session keys used by auth, settings, and run output."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+        restore_from_cookies()
     if "settings_prompt" not in st.session_state:
         st.session_state.settings_prompt = DEFAULT_PROMPT
     if "settings_model" not in st.session_state:
@@ -319,10 +321,12 @@ def main() -> None:
 
     if not st.session_state.authenticated:
         render_sign_in()
+        sync_cookies()
         return
 
     render_main()
     render_sidebar()
+    sync_cookies()
 
 
 if __name__ == "__main__":

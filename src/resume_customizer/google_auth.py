@@ -1,4 +1,4 @@
-"""Google OAuth helpers for Streamlit session tokens (not persisted to disk)."""
+"""Google OAuth helpers for Streamlit session tokens and signed browser cookies."""
 
 from __future__ import annotations
 
@@ -41,7 +41,10 @@ def build_flow(*, client_id: str, client_secret: str, redirect_uri: str) -> Flow
 
 
 def credentials_to_dict(creds: Credentials) -> dict[str, Any]:
-    """Serialize credentials for ``st.session_state`` (memory only)."""
+    """Serialize credentials for ``st.session_state``.
+
+    Browser cookies store a subset of this dict (never ``client_secret``).
+    """
     expiry = creds.expiry.isoformat() if creds.expiry else None
     return {
         "token": creds.token,

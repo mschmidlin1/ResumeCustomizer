@@ -6,6 +6,7 @@ from typing import Any
 
 import streamlit as st
 
+from resume_customizer.browser_auth import render_connect_google_button
 from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.editors.base import EditorRunResult, RunSettings, SourceHandle
 from resume_customizer.editors.google_picker import google_doc_picker
@@ -65,6 +66,23 @@ def _app_origin(redirect_uri: str) -> str:
     return redirect_uri.rstrip("/")
 
 
+def _refresh_stored_google_token(secrets: dict[str, str]) -> dict[str, Any] | None:
+    """Refresh an expired access token in session; clear Google state if that fails."""
+    token_dict: dict[str, Any] | None = st.session_state.get("google_token")
+    if not token_dict:
+        return None
+    merged = dict(token_dict)
+    merged["client_secret"] = secrets["client_secret"]
+    try:
+        creds = credentials_from_dict(merged)
+        fresh = credentials_to_dict(creds)
+        st.session_state.google_token = fresh
+        return fresh
+    except Exception:
+        clear_google_session()
+        return None
+
+
 def _handle_oauth_callback(secrets: dict[str, str]) -> None:
     """Exchange ``?code=`` from Google if present, then clear query params."""
     params = st.query_params
@@ -75,6 +93,8 @@ def _handle_oauth_callback(secrets: dict[str, str]) -> None:
     expected = st.session_state.get("google_oauth_state")
     if not expected or state != expected:
         st.error("Google sign-in could not be verified. Click Connect Google again.")
+        st.session_state.pop("google_oauth_state", None)
+        st.session_state.pop("google_auth_url", None)
         st.query_params.clear()
         return
     redirect_uri = _infer_redirect_uri(secrets["redirect_uri"])
@@ -92,10 +112,12 @@ def _handle_oauth_callback(secrets: dict[str, str]) -> None:
         except Exception:
             st.session_state.google_email = ""
         st.session_state.pop("google_oauth_state", None)
+        st.session_state.pop("google_auth_url", None)
     except Exception as exc:
         st.error(f"Google sign-in failed: {exc}")
+        st.session_state.pop("google_oauth_state", None)
+        st.session_state.pop("google_auth_url", None)
     st.query_params.clear()
-    st.rerun()
 
 
 class GoogleEditor:
@@ -116,7 +138,7 @@ class GoogleEditor:
             return None
 
         _handle_oauth_callback(secrets)
-        token_dict: dict[str, Any] | None = st.session_state.get("google_token")
+        token_dict = _refresh_stored_google_token(secrets)
         redirect_uri = _infer_redirect_uri(secrets["redirect_uri"])
 
         if not token_dict:
@@ -128,11 +150,12 @@ class GoogleEditor:
                 )
                 auth_url, state = flow.authorization_url(
                     access_type="offline",
-                    prompt="select_account",
+                    prompt="consent",
+                    include_granted_scopes="true",
                 )
                 st.session_state.google_oauth_state = state
                 st.session_state.google_auth_url = auth_url
-            st.link_button("Connect Google", st.session_state.google_auth_url)
+            render_connect_google_button(st.session_state.google_auth_url)
             st.caption("Uses your Google account. The app password and Claude key stay the same.")
             return None
 

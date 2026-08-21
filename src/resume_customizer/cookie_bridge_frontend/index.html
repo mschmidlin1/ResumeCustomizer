@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: sans-serif;
+      }
+      button {
+        padding: 0.35rem 0.85rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="connect" type="button" hidden>Connect Google</button>
+    <script>
+      function post(type, extra) {
+        window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra || {}), "*");
+      }
+      const Streamlit = {
+        setComponentReady: function () {
+          post("streamlit:componentReady", { apiVersion: 1 });
+        },
+        setFrameHeight: function (height) {
+          post("streamlit:setFrameHeight", { height: height });
+        },
+      };
+
+      function applyCookies(list) {
+        const secure = window.location.protocol === "https:" ? "; Secure" : "";
+        (list || []).forEach(function (c) {
+          if (!c || !c.name) {
+            return;
+          }
+          if (c.delete) {
+            document.cookie = c.name + "=; path=/; max-age=0; SameSite=Lax" + secure;
+            return;
+          }
+          const maxAge = typeof c.maxAge === "number" ? c.maxAge : 0;
+          document.cookie =
+            c.name + "=" + String(c.value || "") + "; path=/; max-age=" + maxAge + "; SameSite=Lax" + secure;
+        });
+      }
+
+      let args = {};
+      window.addEventListener("message", function (event) {
+        if (!event.data || event.data.type !== "streamlit:render") {
+          return;
+        }
+        args = event.data.args || {};
+        applyCookies(args.cookies);
+        const authUrl = args.authUrl || "";
+        const btn = document.getElementById("connect");
+        if (authUrl) {
+          btn.hidden = false;
+          Streamlit.setFrameHeight(52);
+        } else {
+          btn.hidden = true;
+          Streamlit.setFrameHeight(0);
+        }
+      });
+
+      document.getElementById("connect").addEventListener("click", function () {
+        applyCookies(args.cookies);
+        const authUrl = args.authUrl || "";
+        if (authUrl) {
+          window.top.location.href = authUrl;
+        }
+      });
+
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(0);
+    </script>
+  </body>
+</html>
