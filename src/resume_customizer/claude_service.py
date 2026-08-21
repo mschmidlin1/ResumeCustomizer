@@ -102,7 +102,8 @@ class ClaudeCustomizationService:
             source_pdf_page_count=source_pdf_page_count,
         )
 
-        message = self._client.messages.create(
+        message = _create_message(
+            self._client,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -154,7 +155,8 @@ class ClaudeCustomizationService:
             measured_pdf_page_count=measured_pdf_page_count,
         )
 
-        message = self._client.messages.create(
+        message = _create_message(
+            self._client,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -192,7 +194,8 @@ class ClaudeCustomizationService:
             anthropic.APIError: On transport or API-level failures from the SDK.
             ValueError: If the reply has no text blocks.
         """
-        message = self._client.messages.create(
+        message = _create_message(
+            self._client,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -202,6 +205,25 @@ class ClaudeCustomizationService:
         raw_text = _extract_text_block(message)
         usage = _usage_from_message(model=model, message=message)
         return raw_text, usage
+
+
+def _create_message(client: anthropic.Anthropic, **kwargs: object) -> Message:
+    """Call ``messages.create``, mapping ``temperature`` for Anthropic SDK 1.x.
+
+    SDK 0.x accepts ``temperature=`` on ``messages.create``. SDK 1.x removed that
+    keyword; the Messages HTTP API still accepts it via ``extra_body``.
+    """
+    create = client.messages.create
+    try:
+        return create(**kwargs)
+    except TypeError as exc:
+        if "temperature" not in str(exc) or "temperature" not in kwargs:
+            raise
+        temperature = kwargs.pop("temperature")
+        extra = dict(kwargs.get("extra_body") or {})  # type: ignore[arg-type]
+        extra["temperature"] = temperature
+        kwargs["extra_body"] = extra
+        return create(**kwargs)
 
 
 def _build_user_message(

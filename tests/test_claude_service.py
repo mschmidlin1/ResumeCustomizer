@@ -144,6 +144,31 @@ class TestClaudeCustomizationService(unittest.TestCase):
         self.assertEqual(result.usage.output_tokens, 200)
         self.assertIsNone(result.usage.estimated_cost_usd)
 
+    @patch("resume_customizer.claude_service.anthropic.Anthropic")
+    def test_complete_json_maps_temperature_when_sdk_rejects_kwarg(self, mock_anthropic: MagicMock) -> None:
+        """Anthropic SDK 1.x dropped ``temperature=``; send it in ``extra_body``."""
+        instance = mock_anthropic.return_value
+        instance.messages.create.side_effect = [
+            TypeError("Messages.create() got an unexpected keyword argument 'temperature'"),
+            _fake_message('{"job_title": "A", "customized_latex": "B"}'),
+        ]
+
+        service = ClaudeCustomizationService(api_key="k")
+        raw, usage = service.complete_json(
+            system_text="S",
+            user_content="U",
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            temperature=0.45,
+        )
+
+        self.assertEqual(raw, '{"job_title": "A", "customized_latex": "B"}')
+        self.assertEqual(usage.model, "claude-sonnet-4-6")
+        self.assertEqual(instance.messages.create.call_count, 2)
+        retry_kw = instance.messages.create.call_args.kwargs
+        self.assertNotIn("temperature", retry_kw)
+        self.assertEqual(retry_kw["extra_body"]["temperature"], 0.45)
+
 
 if __name__ == "__main__":
     unittest.main()
