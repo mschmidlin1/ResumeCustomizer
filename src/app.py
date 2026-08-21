@@ -136,11 +136,26 @@ def _show_run_cost(result: EditorRunResult) -> None:
         )
 
 
-def render_sign_in() -> None:
-    """Render the password gate when the user is not authenticated."""
-    st.title("Resume customizer")
-    st.caption("Sign in to continue.")
+def render_public_home() -> None:
+    """Public landing and password form (must be readable without signing in)."""
+    st.title("Resume Customizer")
+    st.write(
+        "Resume Customizer is a small web app that tailors an existing resume to a job "
+        "description using Anthropic’s Claude models."
+    )
+    st.write(
+        "You can upload a LaTeX `.tex` resume, or connect Google and pick a Google Doc. "
+        "The app rewrites wording to match the posting, keeps claims grounded in the source "
+        "resume, and checks that the result does not grow past the original page count."
+    )
+    st.write(
+        "If you connect Google, Resume Customizer only uses Docs and Drive files you pick "
+        "or that it creates (copies in a Drive folder named ResumeCustomizer). It does not "
+        "replace your original Doc. A shared app password is required to use the tool."
+    )
+    st.markdown("[Privacy policy](?privacy=1)")
 
+    st.subheader("Sign in")
     expected = _get_expected_password()
     if expected is None:
         st.error(
@@ -161,10 +176,41 @@ def render_sign_in() -> None:
             st.error("Incorrect password.")
 
 
+def render_privacy_policy() -> None:
+    """Public privacy policy for OAuth branding (no login required)."""
+    st.title("Resume Customizer")
+    st.subheader("Privacy policy")
+    st.markdown("[Back to home](/)")
+    st.write(
+        "Resume Customizer is a password-protected tool. It is not a public consumer product "
+        "and does not sell personal data."
+    )
+    st.write(
+        "**What you provide.** The app password, a job description, and a resume you upload "
+        "or a Google Doc you pick. Optional Google sign-in uses Google’s OAuth screen."
+    )
+    st.write(
+        "**Google.** If you click Connect Google, the app can read and edit only files you "
+        "select in the picker and files it creates on your behalf (a ResumeCustomizer folder "
+        "and customized copies). Tokens stay in your browser session or a short-lived cookie "
+        "on this site. Disconnect or Sign out clears them. The original Doc is not overwritten."
+    )
+    st.write(
+        "**Claude (Anthropic).** Resume text and the job description are sent to Anthropic "
+        "to generate the customized wording. Do not paste secrets you do not want processed "
+        "by that API."
+    )
+    st.write(
+        "**Logs and cost records.** Estimated API usage may be stored to track spend. "
+        "Google account tokens are not stored in that ledger."
+    )
+    st.write("Questions: use the support email listed on the Google sign-in screen for this app.")
+
+
 def render_sidebar() -> None:
     """Render navigation, sign-out, and model settings."""
     with st.sidebar:
-        st.header("Resume customizer")
+        st.header("Resume Customizer")
         if st.button("Sign out", type="secondary"):
             st.session_state.authenticated = False
             _reset_outputs()
@@ -310,14 +356,20 @@ def render_main() -> None:
 def main() -> None:
     """Configure the page, initialize session state, and route to sign-in or main UI."""
     st.set_page_config(
-        page_title="Resume customizer",
+        page_title="Resume Customizer",
         page_icon="📄",
         layout="wide",
     )
     _init_session_state()
 
+    privacy = st.query_params.get("privacy")
+    if str(privacy or "").strip().lower() in ("1", "true", "yes"):
+        render_privacy_policy()
+        sync_cookies()
+        return
+
     if not st.session_state.authenticated:
-        render_sign_in()
+        render_public_home()
         sync_cookies()
         return
 
