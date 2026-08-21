@@ -1,57 +1,26 @@
-"""Streamlit entrypoint: resume customizer UI backed by Claude and pdfLaTeX validation."""
+"""Streamlit entrypoint: resume customizer UI with LaTeX and Google Docs editors."""
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-import anthropic
 import streamlit as st
 
-from resume_customizer import (
-    DEFAULT_FILENAME_BASE,
-    ClaudeCustomizationService,
-    CustomizationParseError,
-    TexCompileError,
-    TexCompiler,
-    count_pdf_pages,
-    safe_filename_base,
-    with_download_disambiguation,
-)
+from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.cost_ledger import CostLedgerEntry, ledger_entry_now
 from resume_customizer.cost_ledger_mongo import CostLedgerMongoService
+from resume_customizer.editors.base import (
+    EditorNotImplementedError,
+    EditorRunResult,
+    RunSettings,
+    SourceResolutionError,
+)
+from resume_customizer.editors.dispatch import resolve_resume_source
+from resume_customizer.editors.google import clear_google_session
+from resume_customizer.editors.latex import DEFAULT_PROMPT
+from resume_customizer.editors.registry import get_editor
 from resume_customizer.pricing import combine_estimated_run_cost_usd, format_usd_display, model_has_list_price
 
-DEFAULT_PROMPT = """You are an expert resume editor. Given a LaTeX resume and a job description,
-rewrite the resume to highlight the most relevant experience while preserving truthfulness and valid LaTeX.
-
-The user message includes SOURCE_PDF_PAGE_COUNT: that value was measured by compiling RESUME_LATEX with pdfLaTeX.
-Your customized_latex must compile to exactly that many PDF pages in the same environment—do not rely on guessing
-from the source alone.
-
-Truth and emphasis:
-- The summary/professional profile must match the scope and emphasis of the experience section: do not promote
-  occasional or partial work to a primary career narrative.
-- Do not introduce claims, themes, or implied career emphasis in the summary that are not clearly supported by the
-  rest of the resume (roles, bullets, tenure).
-- Do not imply years of focus or end-to-end ownership for themes that appear only lightly in the body; use
-  proportionate phrasing (e.g. exposure to, supported, contributions to, some experience with) or soften rather than
-  stretch.
-- If in doubt, soften the summary rather than stretch it.
-
-Operational rules:
-- In the skills/technical section, actively incorporate relevant job-description terminology and standard phrasing by
-  rephrasing or reordering existing skills; do not add skills the resume does not support. Only use terms already
-  reflected in experience or clearly implied by listed tools.
-- Weave the most relevant job-description terms by rephrasing existing lines; avoid appending new lines or bullets
-  unless you remove or shorten other material of comparable length so the net vertical space does not grow.
-- Do not add new sections, extra \\vspace, or other devices that increase vertical stretch.
-- Prefer tightening wording over adding clauses. If you add a keyword, swap or compress nearby text to compensate.
-- Do not change \\documentclass, page geometry, font size, or list spacing to “cheat” the page count unless the user’s
-  template already implies such edits; prefer content edits in the body.
-"""
-
-# Anthropic Messages API model ids (aliases). Older dated Claude 3.5 ids return 404.
 MODEL_OPTIONS: list[str] = [
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
@@ -86,28 +55,14 @@ def _init_session_state() -> None:
         st.session_state.settings_temperature = 0.45
     if "settings_max_tokens" not in st.session_state:
         st.session_state.settings_max_tokens = 4096
-    if "last_run_ok" not in st.session_state:
-        st.session_state.last_run_ok = False
-    if "compile_failed" not in st.session_state:
-        st.session_state.compile_failed = False
-    if "output_tex" not in st.session_state:
-        st.session_state.output_tex = ""
-    if "output_pdf" not in st.session_state:
-        st.session_state.output_pdf = b""
-    if "download_base_name" not in st.session_state:
-        st.session_state.download_base_name = ""
-    if "last_source_name" not in st.session_state:
-        st.session_state.last_source_name = ""
+    if "last_editor_result" not in st.session_state:
+        st.session_state.last_editor_result = None
     if st.session_state.settings_model not in MODEL_OPTIONS:
         st.session_state.settings_model = MODEL_OPTIONS[0]
 
 
 def _get_expected_password() -> str | None:
-    """Return the configured sign-in password, or ``None`` if unset.
-
-    Returns:
-        Plain-text password from secrets, or ``None`` when misconfigured.
-    """
+    """Return the configured sign-in password, or ``None`` if unset."""
     try:
         auth = st.secrets.get("auth", {})
         pwd = auth.get("password")
@@ -119,11 +74,7 @@ def _get_expected_password() -> str | None:
 
 
 def _get_anthropic_api_key() -> str | None:
-    """Return the Anthropic API key from Streamlit secrets.
-
-    Returns:
-        API key string, or ``None`` if missing or blank.
-    """
+    """Return the Anthropic API key from Streamlit secrets."""
     try:
         block = st.secrets.get("anthropic", {})
         key = block.get("api_key")
@@ -134,30 +85,53 @@ def _get_anthropic_api_key() -> str | None:
     return None
 
 
-def _resolve_download_base(job_title: str, source_filename: str) -> str:
-    """Pick a sanitized download basename from the model title or upload name.
-
-    Args:
-        job_title: ``job_title`` field from the model JSON (already non-empty from parsing).
-        source_filename: Original uploaded file name (used when the title maps to the default).
-
-    Returns:
-        Filesystem-safe stem without extension.
-    """
-    title_base = safe_filename_base(job_title)
-    upload_base = safe_filename_base(Path(source_filename or "resume.tex").stem)
-    if title_base != DEFAULT_FILENAME_BASE:
-        return title_base
-    return upload_base
-
-
 def _reset_outputs() -> None:
-    """Clear run output flags and artifacts from session state."""
-    st.session_state.last_run_ok = False
-    st.session_state.compile_failed = False
-    st.session_state.output_tex = ""
-    st.session_state.output_pdf = b""
-    st.session_state.download_base_name = ""
+    """Clear the last editor run from session state."""
+    st.session_state.last_editor_result = None
+
+
+def _show_result_messages(result: EditorRunResult) -> None:
+    """Render captions, errors, warnings, and info from an editor run."""
+    for caption in result.captions:
+        st.caption(caption)
+    for err in result.errors:
+        if "\n" in err.strip():
+            st.code(err, language="text")
+        else:
+            st.error(err)
+    for warning in result.warnings:
+        st.warning(warning)
+    for info in result.info_messages:
+        st.success(info)
+
+
+def _show_run_cost(result: EditorRunResult) -> None:
+    """Display estimated Anthropic spend for this run."""
+    if not result.usages:
+        return
+    first = result.usages[0]
+    second = result.usages[1] if len(result.usages) > 1 else None
+    run_cost_total, run_cost_partial = combine_estimated_run_cost_usd(
+        first_cost=first.estimated_cost_usd,
+        second_cost=second.estimated_cost_usd if second is not None else None,
+        two_calls=result.condense_succeeded,
+    )
+    run_display = format_usd_display(run_cost_total if run_cost_total is not None else 0.0)
+    st.info(f"Est. API cost this run: {run_display} (from token usage and list prices).")
+    if run_cost_partial and result.condense_succeeded:
+        st.caption(
+            "Part of this run used two API calls; at least one has no list price in "
+            "`pricing.py`, so the amount above may undercount actual spend."
+        )
+    pricing_gap = not model_has_list_price(first.model) or (
+        result.condense_succeeded and second is not None and not model_has_list_price(second.model)
+    )
+    if pricing_gap:
+        st.warning(
+            "No list price is configured for one or more model ids used this run; spend may be "
+            "missing from the estimate and sidebar total for those calls. Add rates in "
+            "`resume_customizer/pricing.py` or pick a listed model."
+        )
 
 
 def render_sign_in() -> None:
@@ -192,6 +166,7 @@ def render_sidebar() -> None:
         if st.button("Sign out", type="secondary"):
             st.session_state.authenticated = False
             _reset_outputs()
+            clear_google_session()
             st.rerun()
 
         api_key_ok = _get_anthropic_api_key() is not None
@@ -203,7 +178,7 @@ def render_sidebar() -> None:
                 "Prompt",
                 value=st.session_state.settings_prompt,
                 height=180,
-                help="System instructions for the model, plus a fixed JSON-only response rule.",
+                help="System instructions for the LaTeX editor, plus a fixed JSON-only response rule.",
             )
             st.session_state.settings_model = st.selectbox(
                 "Model",
@@ -230,32 +205,42 @@ def render_sidebar() -> None:
 
         _mongo = _ledger_mongo_service()
         _total_spend = _mongo.get_total()
-        _src = "MongoDB"
         st.metric("Total est. API spend", format_usd_display(_total_spend))
-        st.caption(f"Estimated from each run’s token usage and list prices ({_src}).")
+        st.caption("Estimated from each run’s token usage and list prices (MongoDB).")
 
 
 def render_main() -> None:
-    """Render upload controls, run action, and download buttons."""
+    """Render two-column source controls, run action, and editor outputs."""
     st.title("Customize resume")
-    st.write("Upload your LaTeX resume, paste the job description, then run to tailor the resume with Claude.")
-    st.caption(
-        "Drag and drop **.tex** file(s) onto the bordered upload area, or click **Browse files**. "
-        "The whole rectangle is the drop target—not only the button."
+    st.write(
+        "Pick a Google Doc or upload a `.tex` resume, paste the job description, then run "
+        "to tailor the resume with Claude."
     )
 
-    uploaded_files = st.file_uploader(
-        "Resume (.tex)",
-        type=["tex"],
-        accept_multiple_files=True,
-        help="Self-contained .tex only for now. Multiple files: Run uses the first.",
-    )
+    google_editor = get_editor("google")
+    col_drive, col_upload = st.columns(2)
+    with col_drive:
+        google_handle = google_editor.render_source_controls()
+    with col_upload:
+        st.subheader("Upload")
+        st.caption(
+            "Drag and drop **.tex** (or **.docx**) onto the bordered area, or click **Browse files**. "
+            "Word `.docx` is not implemented yet."
+        )
+        uploaded_files = st.file_uploader(
+            "Resume (.tex or .docx)",
+            type=["tex", "docx"],
+            accept_multiple_files=True,
+            help="Self-contained .tex for LaTeX. Multiple files: Run uses the first. .docx coming later.",
+        )
+
     uploaded = uploaded_files[0] if uploaded_files else None
     if uploaded_files and len(uploaded_files) > 1:
         names = ", ".join(f.name or "(unnamed)" for f in uploaded_files)
         st.info(
             f"**{len(uploaded_files)} files selected.** Run uses the first: **{uploaded_files[0].name}**. ({names})"
         )
+
     job_text = st.text_area("Job description", height=220, placeholder="Paste the job posting here…")
 
     col1, _col2 = st.columns(2)
@@ -267,225 +252,60 @@ def render_main() -> None:
         api_key = _get_anthropic_api_key()
         if api_key is None:
             st.error("Anthropic API key is not configured. Set `[anthropic]` `api_key` in `.streamlit/secrets.toml`.")
-        elif uploaded is None:
-            st.warning("Please upload a .tex resume before running.")
         elif not (job_text or "").strip():
             st.warning("Please paste a job description.")
         else:
-            raw = uploaded.getvalue()
+            google_file = None
+            google_creds = None
+            if google_handle is not None:
+                google_file = {
+                    "id": google_handle.google_file_id,
+                    "name": google_handle.google_file_name,
+                    "mimeType": google_handle.google_mime_type,
+                }
+                google_creds = google_handle.google_credentials
             try:
-                source_tex = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                source_tex = raw.decode("utf-8", errors="replace")
-            if source_tex.startswith("\ufeff"):
-                source_tex = source_tex[1:]
-
-            source_name = uploaded.name or "resume.tex"
-            st.session_state.last_source_name = source_name
-            source_job = safe_filename_base(Path(source_name).stem)
-
-            compiler = TexCompiler()
-            try:
-                with st.spinner("Measuring source PDF page count...", show_time=True):
-                    source_pdf_bytes = compiler.compile_to_pdf(source_tex, jobname=source_job)
-            except TexCompileError as exc:
-                st.session_state.compile_failed = True
-                st.error(
-                    "Could not compile your uploaded `.tex` to PDF, so the source page count is unknown. "
-                    "Use a self-contained document and ensure pdfLaTeX (MiKTeX or TeX Live) is on PATH."
+                source = resolve_resume_source(
+                    google_file=google_file,
+                    uploaded_name=(uploaded.name if uploaded is not None else None),
+                    uploaded_bytes=(uploaded.getvalue() if uploaded is not None else b""),
+                    google_credentials=google_creds,
                 )
-                st.error(f"pdfLaTeX: {exc}")
-                if exc.log_excerpt.strip():
-                    st.code(exc.log_excerpt, language="text")
+            except SourceResolutionError as exc:
+                st.warning(str(exc))
             else:
                 try:
-                    source_pages = count_pdf_pages(source_pdf_bytes)
-                except ValueError as exc:
-                    st.error(f"Could not read page count from the source PDF: {exc}")
+                    editor = get_editor(source.editor_id)
+                except EditorNotImplementedError as exc:
+                    st.error(str(exc))
+                except KeyError as exc:
+                    st.error(str(exc))
                 else:
-                    st.caption(f"Source resume: **{source_pages}** PDF page(s) (measured via pdfLaTeX).")
-
-                    try:
-                        service = ClaudeCustomizationService(api_key=api_key)
-                        with st.spinner("Customizing resume...", show_time=True):
-                            result = service.customize(
-                                system_prompt=st.session_state.settings_prompt,
-                                job_description=job_text.strip(),
-                                resume_latex=source_tex,
-                                model=st.session_state.settings_model,
-                                max_tokens=int(st.session_state.settings_max_tokens),
-                                temperature=float(st.session_state.settings_temperature),
-                                source_pdf_page_count=source_pages,
-                            )
-                    except CustomizationParseError as exc:
-                        st.error(f"Could not parse model output: {exc}")
-                    except anthropic.APIError as exc:
-                        st.error(f"Anthropic API error: {exc}")
-                    except Exception as exc:
-                        st.error(f"Unexpected error: {exc}")
-                    else:
-                        customized_latex = result.payload.customized_latex
-                        job_title_for_base = result.payload.job_title
-                        condense_succeeded = False
-                        repair_cost: float | None = None
-                        repair_model: str | None = None
-
+                    settings = RunSettings(
+                        system_prompt=st.session_state.settings_prompt,
+                        model=st.session_state.settings_model,
+                        temperature=float(st.session_state.settings_temperature),
+                        max_tokens=int(st.session_state.settings_max_tokens),
+                        api_key=api_key,
+                    )
+                    claude = ClaudeCustomizationService(api_key=api_key)
+                    result = editor.run(source, job_text.strip(), claude, settings)
+                    st.session_state.last_editor_result = result
+                    _show_result_messages(result)
+                    for usage in result.usages:
                         _persist_ledger_entry(
                             ledger_entry_now(
-                                model=result.usage.model,
-                                input_tokens=result.usage.input_tokens,
-                                output_tokens=result.usage.output_tokens,
-                                estimated_cost_usd=result.usage.estimated_cost_usd,
-                            ),
-                        )
-
-                        try:
-                            pdf_bytes = compiler.compile_to_pdf(customized_latex)
-                        except TexCompileError as exc:
-                            st.session_state.compile_failed = True
-                            st.session_state.last_run_ok = False
-                            st.session_state.output_tex = customized_latex
-                            st.session_state.download_base_name = with_download_disambiguation(
-                                _resolve_download_base(job_title_for_base, source_name)
+                                model=usage.model,
+                                input_tokens=usage.input_tokens,
+                                output_tokens=usage.output_tokens,
+                                estimated_cost_usd=usage.estimated_cost_usd,
                             )
-                            st.error(f"PDF compile check failed: {exc}")
-                            if exc.log_excerpt.strip():
-                                st.code(exc.log_excerpt, language="text")
-                            st.warning(
-                                "The model returned LaTeX, but pdfLaTeX did not produce a PDF. "
-                                "You can still download the customized `.tex` below to fix locally."
-                            )
-                        else:
-                            out_pages = count_pdf_pages(pdf_bytes)
-                            if out_pages > source_pages:
-                                try:
-                                    with st.spinner(
-                                        "Condensing to match original page count...", show_time=True
-                                    ):
-                                        repair = service.condense_resume_to_page_budget(
-                                            system_prompt=st.session_state.settings_prompt,
-                                            job_description=job_text.strip(),
-                                            customized_latex=customized_latex,
-                                            target_pdf_page_count=source_pages,
-                                            measured_pdf_page_count=out_pages,
-                                            model=st.session_state.settings_model,
-                                            max_tokens=int(st.session_state.settings_max_tokens),
-                                            temperature=float(st.session_state.settings_temperature),
-                                        )
-                                except CustomizationParseError as exc:
-                                    st.warning(
-                                        f"Condense pass could not parse model output ({exc}). "
-                                        f"Keeping the first version (**{out_pages}** pages; target **{source_pages}**)."
-                                    )
-                                except anthropic.APIError as exc:
-                                    st.warning(
-                                        f"Condense pass API error ({exc}). "
-                                        f"Keeping the first version (**{out_pages}** pages; target **{source_pages}**)."
-                                    )
-                                else:
-                                    _persist_ledger_entry(
-                                        ledger_entry_now(
-                                            model=repair.usage.model,
-                                            input_tokens=repair.usage.input_tokens,
-                                            output_tokens=repair.usage.output_tokens,
-                                            estimated_cost_usd=repair.usage.estimated_cost_usd,
-                                        ),
-                                    )
-                                    condense_succeeded = True
-                                    repair_cost = repair.usage.estimated_cost_usd
-                                    repair_model = repair.usage.model
-
-                                    customized_latex = repair.payload.customized_latex
-                                    job_title_for_base = repair.payload.job_title
-                                    try:
-                                        pdf_bytes = compiler.compile_to_pdf(customized_latex)
-                                    except TexCompileError as exc:
-                                        st.session_state.compile_failed = True
-                                        st.session_state.last_run_ok = False
-                                        st.session_state.output_tex = customized_latex
-                                        st.session_state.download_base_name = with_download_disambiguation(
-                                            _resolve_download_base(job_title_for_base, source_name)
-                                        )
-                                        st.error(f"PDF compile failed after condense pass: {exc}")
-                                        if exc.log_excerpt.strip():
-                                            st.code(exc.log_excerpt, language="text")
-                                        st.warning(
-                                            "The condensed LaTeX did not compile. "
-                                            "You can still download the `.tex` below to fix locally."
-                                        )
-                                    else:
-                                        out_pages = count_pdf_pages(pdf_bytes)
-                                        if out_pages > source_pages:
-                                            st.warning(
-                                                f"After the condense pass, the PDF still has **{out_pages}** page(s) "
-                                                f"(target **{source_pages}**). Review or tighten the `.tex` manually."
-                                            )
-
-                            if not st.session_state.compile_failed:
-                                st.session_state.output_tex = customized_latex
-                                st.session_state.output_pdf = pdf_bytes
-                                st.session_state.download_base_name = with_download_disambiguation(
-                                    _resolve_download_base(job_title_for_base, source_name)
-                                )
-                                st.session_state.last_run_ok = True
-                                st.session_state.compile_failed = False
-                                st.success("Resume customized and PDF compile check passed.")
-
-                        run_cost_total, run_cost_partial = combine_estimated_run_cost_usd(
-                            first_cost=result.usage.estimated_cost_usd,
-                            second_cost=repair_cost,
-                            two_calls=condense_succeeded,
                         )
-                        run_display = format_usd_display(
-                            run_cost_total if run_cost_total is not None else 0.0
-                        )
-                        st.info(f"Est. API cost this run: {run_display} (from token usage and list prices).")
-                        if run_cost_partial and condense_succeeded:
-                            st.caption(
-                                "Part of this run used two API calls; at least one has no list price in "
-                                "`pricing.py`, so the amount above may undercount actual spend."
-                            )
-                        pricing_gap = not model_has_list_price(result.usage.model) or (
-                            condense_succeeded
-                            and repair_model is not None
-                            and not model_has_list_price(repair_model)
-                        )
-                        if pricing_gap:
-                            st.warning(
-                                "No list price is configured for one or more model ids used this run; spend may be "
-                                "missing from the estimate and sidebar total for those calls. Add rates in "
-                                "`resume_customizer/pricing.py` or pick a listed model."
-                            )
+                    _show_run_cost(result)
 
-    if st.session_state.output_tex and st.session_state.download_base_name:
-        base = st.session_state.download_base_name
-        tex_name = f"{base}.tex"
-        pdf_ready = (
-            st.session_state.last_run_ok
-            and bool(st.session_state.output_pdf)
-            and st.session_state.download_base_name
-        )
-        col_tex, col_pdf = st.columns(2)
-        with col_tex:
-            st.download_button(
-                label="Download customized resume (.tex)",
-                data=st.session_state.output_tex.encode("utf-8"),
-                file_name=tex_name,
-                mime="text/plain",
-                type="primary",
-                key="download_tex",
-            )
-        with col_pdf:
-            if pdf_ready:
-                pdf_name = f"{base}.pdf"
-                st.download_button(
-                    label="Download customized resume (.pdf)",
-                    data=st.session_state.output_pdf,
-                    file_name=pdf_name,
-                    mime="application/pdf",
-                    type="primary",
-                    key="download_pdf",
-                )
+    last: EditorRunResult | None = st.session_state.last_editor_result
+    if last is not None:
+        get_editor(last.editor_id).render_outputs(last)
 
 
 def main() -> None:
@@ -501,7 +321,6 @@ def main() -> None:
         render_sign_in()
         return
 
-    # Main first so a successful Run persists spend to MongoDB before the sidebar reads totals.
     render_main()
     render_sidebar()
 

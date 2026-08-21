@@ -8,6 +8,7 @@ from resume_customizer.parsing import (
     CustomizationParseError,
     extract_json_object_text,
     parse_customization_payload,
+    parse_replacement_payload,
 )
 
 
@@ -55,6 +56,40 @@ class TestParseCustomizationPayload(unittest.TestCase):
         """Missing required keys raises :class:`CustomizationParseError`."""
         with self.assertRaises(CustomizationParseError):
             parse_customization_payload('{"job_title": "" , "customized_latex": "x"}')
+
+
+class TestParseReplacementPayload(unittest.TestCase):
+    """Tests for :func:`parse_replacement_payload`."""
+
+    def test_parses_replacements(self) -> None:
+        """Valid job_title and replacements produce a payload."""
+        text = '{"job_title": "Engineer", "replacements": [{"block_id": 2, "text": "Hello"}]}'
+        payload = parse_replacement_payload(text)
+        self.assertEqual(payload.job_title, "Engineer")
+        self.assertEqual(len(payload.replacements), 1)
+        self.assertEqual(payload.replacements[0].block_id, 2)
+        self.assertEqual(payload.replacements[0].text, "Hello")
+
+    def test_empty_replacements_ok(self) -> None:
+        """An empty replacements array is valid."""
+        payload = parse_replacement_payload('{"job_title": "Role", "replacements": []}')
+        self.assertEqual(payload.replacements, ())
+
+    def test_missing_job_title_raises(self) -> None:
+        with self.assertRaises(CustomizationParseError):
+            parse_replacement_payload('{"job_title": "", "replacements": []}')
+
+    def test_empty_text_raises(self) -> None:
+        with self.assertRaises(CustomizationParseError):
+            parse_replacement_payload(
+                '{"job_title": "A", "replacements": [{"block_id": 0, "text": "  "}]}'
+            )
+
+    def test_non_int_block_id_raises(self) -> None:
+        with self.assertRaises(CustomizationParseError):
+            parse_replacement_payload(
+                '{"job_title": "A", "replacements": [{"block_id": "0", "text": "x"}]}'
+            )
 
 
 if __name__ == "__main__":

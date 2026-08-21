@@ -87,6 +87,15 @@ When a visitor opens `https://customizer.schmidlin.casa`:
 4. The cluster **Service** (port 80 → pod 8501) routes to the **Pod** running Streamlit.
 5. Streamlit reads `[auth]` and `[anthropic]` from `/app/.streamlit/secrets.toml` (mounted from a K8s Secret) and connects to MongoDB at `mongodb://vanaheim.lan:27017`.
 
+### Google Docs OAuth (when `[google]` is configured)
+
+Visitors **Connect Google** with their own account. The OAuth **web** client must list these **Authorized redirect URIs** (exact, no trailing slash unless you set `redirect_uri` to match):
+
+- `http://localhost:8501` — local Streamlit
+- `https://customizer.schmidlin.casa` — this production host
+
+Also enable Drive API, Docs API, and Picker API, and restrict the Picker API key HTTP referrers to those hosts. Optional `redirect_uri` in `[google]` overrides origin detection (useful if `X-Forwarded-Proto` is wrong behind the tunnel). Do not put visitor OAuth tokens in MongoDB or the K8s Secret; they stay in the Streamlit session. The K8s `secrets.toml` only needs `[google]` client_id / client_secret / api_key / app_id if you enable the feature.
+
 ---
 
 ## Current status — what is already done
@@ -98,7 +107,7 @@ These items exist in the repo and do **not** need to be recreated for production
 | **Dockerfile** | `Dockerfile` | Python 3.11, TeX Live, Streamlit on 8501 |
 | **`.dockerignore`** | `.dockerignore` | Excludes secrets, tests, caches |
 | **`docker-compose.yml`** | `docker-compose.yml` | Local dev; points at dev Mongo (`192.168.50.116`) |
-| **Secrets template** | `.streamlit/secrets.toml.example` | Shape for `[auth]` and `[anthropic]` |
+| **Secrets template** | `.streamlit/secrets.toml.example` | Shape for `[auth]`, `[anthropic]`, and optional `[google]` |
 | **Local Docker playbook** | `docs/DockerSetup.md` | WSL / VS Code dev workflow |
 | **App code** | `src/app.py`, `src/resume_customizer/` | Reads `MONGODB_URI`, `RESUME_CUSTOMIZER_DB`, and `secrets.toml` — no app changes required for deploy |
 | **GitHub repo** | `github.com/mschmidlin1/ResumeCustomizer` | Created and synced with local |

@@ -1,21 +1,22 @@
 # ResumeCustomizer
 
-This repo is a small **Streamlit** app that tailors a **LaTeX** resume to a job description using the **Anthropic (Claude) API**, validates the result by compiling to **PDF** with **pdfLaTeX**, and offers separate downloads for the customized `.tex` and `.pdf`.
+This repo is a small **Streamlit** app that tailors a resume to a job description using the **Anthropic (Claude) API**. **LaTeX** (`.tex`) is compiled with **pdfLaTeX** and returned as `.tex` + `.pdf`. **Google Docs** (optional) uses Connect Google + a Drive picker, copies the Doc into a `ResumeCustomizer` folder, edits via the Docs API, and checks page count by exporting PDF through Drive.
 
 ## Setup
 
 1. Copy [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) to `.streamlit/secrets.toml`.
 2. Set `[auth]` `password` for the app sign-in page.
 3. Set `[anthropic]` `api_key` to your [Anthropic API key](https://console.anthropic.com/).
-4. Install a LaTeX distribution (**MiKTeX** or **TeX Live**) so `pdflatex` is on your `PATH` (required for PDF validation and the PDF download).
-5. Create a virtual environment (`python -m venv .venv`), activate it, then install dependencies:
+4. Optional: set `[google]` keys (see the example file) to enable **Connect Google** and the Drive picker. Add OAuth redirect URIs for `http://localhost:8501` and the deployed host.
+5. Install a LaTeX distribution (**MiKTeX** or **TeX Live**) so `pdflatex` is on your `PATH` (required for LaTeX PDF validation and the PDF download).
+6. Create a virtual environment (`python -m venv .venv`), activate it, then install dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-6. Set **`MONGODB_URI`** (and optionally **`RESUME_CUSTOMIZER_DB`**) in the environment; see [`.vscode/launch.json`](.vscode/launch.json) for example values used when debugging.
-7. Run the app from the repo root (so `src` can be resolved):
+7. Set **`MONGODB_URI`** (and optionally **`RESUME_CUSTOMIZER_DB`**) in the environment; see [`.vscode/launch.json`](.vscode/launch.json) for example values used when debugging.
+8. Run the app from the repo root (so `src` can be resolved):
 
    ```bash
    streamlit run src/app.py

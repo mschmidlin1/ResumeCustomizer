@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 import unicodedata
+from pathlib import Path
 
 # Windows reserved device names (without extension).
 _WINDOWS_RESERVED: frozenset[str] = frozenset(
@@ -120,3 +121,20 @@ def with_download_disambiguation(
     if not base:
         base = _FALLBACK_BASE
     return f"{base}{suffix}"
+
+
+def download_base_from_job_title(job_title: str, source_filename: str) -> str:
+    """Pick a sanitized download basename from the model title or source name.
+
+    Args:
+        job_title: ``job_title`` field from the model JSON (already non-empty from parsing).
+        source_filename: Original upload or Drive file name (used when the title maps to the default).
+
+    Returns:
+        Filesystem-safe stem without extension.
+    """
+    title_base = safe_filename_base(job_title)
+    upload_base = safe_filename_base(Path(source_filename or "resume").stem)
+    if title_base != DEFAULT_FILENAME_BASE:
+        return title_base
+    return upload_base

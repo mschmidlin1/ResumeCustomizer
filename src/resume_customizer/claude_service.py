@@ -167,6 +167,42 @@ class ClaudeCustomizationService:
         usage = _usage_from_message(model=model, message=message)
         return ClaudeCustomizationResult(payload=payload, raw_response_text=raw_text, usage=usage)
 
+    def complete_json(
+        self,
+        *,
+        system_text: str,
+        user_content: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> tuple[str, CustomizationUsage]:
+        """Call the Messages API and return assistant text plus usage.
+
+        Args:
+            system_text: Full system prompt (including JSON-only rules).
+            user_content: User turn body.
+            model: Anthropic model id.
+            max_tokens: Maximum tokens for the assistant reply.
+            temperature: Sampling temperature in ``[0, 1]``.
+
+        Returns:
+            Raw assistant text and usage summary.
+
+        Raises:
+            anthropic.APIError: On transport or API-level failures from the SDK.
+            ValueError: If the reply has no text blocks.
+        """
+        message = self._client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_text,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        raw_text = _extract_text_block(message)
+        usage = _usage_from_message(model=model, message=message)
+        return raw_text, usage
+
 
 def _build_user_message(
     *,

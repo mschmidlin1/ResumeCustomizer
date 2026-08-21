@@ -5,6 +5,8 @@ from __future__ import annotations
 import unittest
 
 from resume_customizer.filenames import (
+    DEFAULT_FILENAME_BASE,
+    download_base_from_job_title,
     download_disambiguation_suffix,
     safe_filename_base,
     with_download_disambiguation,
@@ -37,6 +39,19 @@ class TestSafeFilenameBase(unittest.TestCase):
         long = "A" * 500
         out = safe_filename_base(long, max_len=20)
         self.assertEqual(len(out), 20)
+
+
+class TestDownloadBaseFromJobTitle(unittest.TestCase):
+    """Tests for :func:`download_base_from_job_title`."""
+
+    def test_uses_job_title_when_not_fallback(self) -> None:
+        self.assertEqual(download_base_from_job_title("Widget Engineer", "resume.tex"), "Widget Engineer")
+
+    def test_uses_upload_stem_when_title_is_default(self) -> None:
+        self.assertEqual(
+            download_base_from_job_title(DEFAULT_FILENAME_BASE, "my_resume.tex"),
+            "my_resume",
+        )
 
 
 class TestDownloadDisambiguation(unittest.TestCase):

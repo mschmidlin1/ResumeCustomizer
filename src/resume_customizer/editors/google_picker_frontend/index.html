@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        font-family: sans-serif;
+      }
+      button {
+        padding: 0.35rem 0.85rem;
+        cursor: pointer;
+      }
+    </style>
+    <script src="https://apis.google.com/js/api.js"></script>
+  </head>
+  <body>
+    <button id="pick" type="button">Pick a Google Doc</button>
+    <script>
+      function post(type, extra) {
+        window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra || {}), "*");
+      }
+      const Streamlit = {
+        setComponentReady: function () {
+          post("streamlit:componentReady", { apiVersion: 1 });
+        },
+        setFrameHeight: function (height) {
+          post("streamlit:setFrameHeight", { height: height });
+        },
+        setComponentValue: function (value) {
+          post("streamlit:setComponentValue", { value: value });
+        },
+      };
+
+      let args = {};
+      window.addEventListener("message", function (event) {
+        if (event.data && event.data.type === "streamlit:render") {
+          args = event.data.args || {};
+        }
+      });
+
+      function openPicker() {
+        const token = args.token;
+        const apiKey = args.apiKey;
+        const appId = args.appId;
+        const origin = args.origin;
+        if (!token || !apiKey || !appId) {
+          return;
+        }
+        gapi.load("picker", function () {
+          const view = new google.picker.DocsView()
+            .setMimeTypes("application/vnd.google-apps.document")
+            .setMode(google.picker.DocsViewMode.LIST);
+          let builder = new google.picker.PickerBuilder()
+            .addView(view)
+            .setOAuthToken(token)
+            .setDeveloperKey(apiKey)
+            .setAppId(String(appId))
+            .setCallback(function (data) {
+              if (data[google.picker.Response.ACTION] === google.picker.Action.PICKED) {
+                const doc = data[google.picker.Response.DOCUMENTS][0];
+                Streamlit.setComponentValue({
+                  id: doc[google.picker.Document.ID],
+                  name: doc[google.picker.Document.NAME],
+                  mimeType: doc[google.picker.Document.MIME_TYPE],
+                });
+              }
+            });
+          if (origin) {
+            builder = builder.setOrigin(origin);
+          }
+          builder.build().setVisible(true);
+        });
+      }
+
+      document.getElementById("pick").addEventListener("click", openPicker);
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(52);
+    </script>
+  </body>
+</html>
