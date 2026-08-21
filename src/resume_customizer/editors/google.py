@@ -6,7 +6,11 @@ from typing import Any
 
 import streamlit as st
 
-from resume_customizer.browser_auth import render_connect_google_button
+from resume_customizer.auth_cookies import (
+    sign_oauth_handshake_state,
+    verify_oauth_handshake_state,
+)
+from resume_customizer.browser_auth import render_connect_google_button, signing_secret
 from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.editors.base import EditorRunResult, RunSettings, SourceHandle
 from resume_customizer.editors.google_picker import google_doc_picker
@@ -16,6 +20,7 @@ from resume_customizer.google_auth import (
     credentials_from_dict,
     credentials_to_dict,
     fetch_account_email,
+    generate_pkce_verifier,
 )
 from resume_customizer.google_docs_ops import GOOGLE_DOC_MIME
 from resume_customizer.google_pipeline import run_google_customization
@@ -23,7 +28,20 @@ from resume_customizer.google_pipeline import run_google_customization
 
 def clear_google_session() -> None:
     """Drop OAuth tokens and the picked Doc from Streamlit session state."""
-    for key in ("google_token", "google_email", "google_picked_file", "google_oauth_state", "google_auth_url"):
+    for key in (
+        "google_token",
+        "google_email",
+        "google_picked_file",
+        "google_oauth_state",
+        "google_oauth_code_verifier",
+        "google_auth_url",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _clear_oauth_handshake() -> None:
+    """Drop the in-progress Google OAuth handshake (not finished tokens)."""
+    for key in ("google_oauth_state", "google_oauth_code_verifier", "google_auth_url"):
         st.session_state.pop(key, None)
 
 
@@ -83,18 +101,31 @@ def _refresh_stored_google_token(secrets: dict[str, str]) -> dict[str, Any] | No
         return None
 
 
+def _query_param_str(params: Any, name: str) -> str | None:
+    """Return the first string value for a Streamlit query param, if present."""
+    raw = params.get(name)
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
 def _handle_oauth_callback(secrets: dict[str, str]) -> None:
     """Exchange ``?code=`` from Google if present, then clear query params."""
     params = st.query_params
-    code = params.get("code")
+    code = _query_param_str(params, "code")
     if not code:
         return
-    state = params.get("state")
-    expected = st.session_state.get("google_oauth_state")
-    if not expected or state != expected:
+    state = _query_param_str(params, "state")
+    secret = signing_secret()
+    verifier = verify_oauth_handshake_state(state, secret) if secret else None
+    if not verifier:
         st.error("Google sign-in could not be verified. Click Connect Google again.")
-        st.session_state.pop("google_oauth_state", None)
-        st.session_state.pop("google_auth_url", None)
+        _clear_oauth_handshake()
         st.query_params.clear()
         return
     redirect_uri = _infer_redirect_uri(secrets["redirect_uri"])
@@ -103,20 +134,19 @@ def _handle_oauth_callback(secrets: dict[str, str]) -> None:
         client_secret=secrets["client_secret"],
         redirect_uri=redirect_uri,
     )
+    flow.code_verifier = verifier
     try:
-        flow.fetch_token(code=str(code))
+        flow.fetch_token(code=code, code_verifier=verifier)
         creds = flow.credentials
         st.session_state.google_token = credentials_to_dict(creds)
         try:
             st.session_state.google_email = fetch_account_email(creds)
         except Exception:
             st.session_state.google_email = ""
-        st.session_state.pop("google_oauth_state", None)
-        st.session_state.pop("google_auth_url", None)
+        _clear_oauth_handshake()
     except Exception as exc:
         st.error(f"Google sign-in failed: {exc}")
-        st.session_state.pop("google_oauth_state", None)
-        st.session_state.pop("google_auth_url", None)
+        _clear_oauth_handshake()
     st.query_params.clear()
 
 
@@ -142,18 +172,29 @@ class GoogleEditor:
         redirect_uri = _infer_redirect_uri(secrets["redirect_uri"])
 
         if not token_dict:
-            if not st.session_state.get("google_auth_url") or not st.session_state.get("google_oauth_state"):
+            if not st.session_state.get("google_auth_url") or not verify_oauth_handshake_state(
+                str(st.session_state.get("google_oauth_state") or ""),
+                signing_secret() or "",
+            ):
+                secret = signing_secret()
+                if not secret:
+                    st.error("Authentication is not configured; cannot start Google sign-in.")
+                    return None
                 flow = build_flow(
                     client_id=secrets["client_id"],
                     client_secret=secrets["client_secret"],
                     redirect_uri=redirect_uri,
                 )
-                auth_url, state = flow.authorization_url(
+                flow.code_verifier = generate_pkce_verifier()
+                handshake_state = sign_oauth_handshake_state(flow.code_verifier, secret)
+                auth_url, _returned_state = flow.authorization_url(
                     access_type="offline",
                     prompt="consent",
                     include_granted_scopes="true",
+                    state=handshake_state,
                 )
-                st.session_state.google_oauth_state = state
+                st.session_state.google_oauth_state = handshake_state
+                st.session_state.google_oauth_code_verifier = flow.code_verifier
                 st.session_state.google_auth_url = auth_url
             render_connect_google_button(st.session_state.google_auth_url)
             st.caption("Uses your Google account. The app password and Claude key stay the same.")

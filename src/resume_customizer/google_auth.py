@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+import string
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -29,6 +31,13 @@ def client_config(client_id: str, client_secret: str, redirect_uri: str) -> dict
             "redirect_uris": [redirect_uri],
         }
     }
+
+
+def generate_pkce_verifier() -> str:
+    """Return a 128-character PKCE ``code_verifier`` (RFC 7636 unreserved set)."""
+    alphabet = string.ascii_letters + string.digits + "-._~"
+    rng = random.SystemRandom()
+    return "".join(rng.choice(alphabet) for _ in range(128))
 
 
 def build_flow(*, client_id: str, client_secret: str, redirect_uri: str) -> Flow:

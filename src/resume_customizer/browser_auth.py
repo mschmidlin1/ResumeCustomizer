@@ -29,7 +29,7 @@ _FRONTEND_DIR = Path(__file__).resolve().parent / "cookie_bridge_frontend"
 _cookie_bridge = components.declare_component("rc_cookie_bridge", path=str(_FRONTEND_DIR))
 
 
-def _signing_secret() -> str | None:
+def signing_secret() -> str | None:
     try:
         auth = st.secrets.get("auth", {})
         pwd = auth.get("password")
@@ -64,7 +64,7 @@ def _read_cookie(name: str) -> str | None:
 
 def restore_from_cookies() -> None:
     """Fill empty session keys from signed cookies (new browser session only)."""
-    secret = _signing_secret()
+    secret = signing_secret()
     if not secret:
         return
     if not st.session_state.get("authenticated") and verify_app_cookie(_read_cookie(APP_COOKIE_NAME), secret):
@@ -81,14 +81,16 @@ def restore_from_cookies() -> None:
             except Exception:
                 pass
     if not st.session_state.get("google_token") and not st.session_state.get("google_oauth_state"):
-        state = verify_oauth_state_cookie(_read_cookie(OAUTH_STATE_COOKIE_NAME), secret)
-        if state:
-            st.session_state.google_oauth_state = state
+        handshake = verify_oauth_state_cookie(_read_cookie(OAUTH_STATE_COOKIE_NAME), secret)
+        if handshake:
+            st.session_state.google_oauth_state = handshake["state"]
+            if handshake["verifier"]:
+                st.session_state.google_oauth_code_verifier = handshake["verifier"]
 
 
 def cookie_assignments() -> list[dict[str, Any]]:
     """Cookie set/delete ops that match the current session."""
-    secret = _signing_secret()
+    secret = signing_secret()
     if not secret:
         return []
     assignments: list[dict[str, Any]] = []
@@ -124,7 +126,11 @@ def cookie_assignments() -> list[dict[str, Any]]:
             assignments.append(
                 {
                     "name": OAUTH_STATE_COOKIE_NAME,
-                    "value": sign_oauth_state_cookie(str(state), secret),
+                    "value": sign_oauth_state_cookie(
+                        str(state),
+                        secret,
+                        code_verifier=str(st.session_state.get("google_oauth_code_verifier") or ""),
+                    ),
                     "maxAge": OAUTH_STATE_MAX_AGE_SECONDS,
                 }
             )

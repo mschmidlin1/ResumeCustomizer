@@ -77,18 +77,46 @@ def verify_app_cookie(value: str | None, secret: str) -> bool:
     return bool(payload and payload.get("ok") is True)
 
 
-def sign_oauth_state_cookie(state: str, secret: str) -> str:
-    """Signed value for the Google OAuth ``state`` handshake."""
-    return sign_payload({"state": state}, secret)
+def sign_oauth_handshake_state(code_verifier: str, secret: str) -> str:
+    """Signed OAuth ``state`` that carries the PKCE verifier (Google echoes it back).
+
+    Uses ``~`` instead of ``.`` so query-string parsers do not split the value.
+    """
+    return sign_payload({"verifier": code_verifier}, secret).replace(".", "~", 1)
 
 
-def verify_oauth_state_cookie(value: str | None, secret: str) -> str | None:
-    """Return the OAuth ``state`` string, or ``None`` if invalid."""
+def verify_oauth_handshake_state(state: str | None, secret: str) -> str | None:
+    """Return the PKCE verifier from a signed OAuth ``state``, or ``None``."""
+    if not state or "~" not in state:
+        return None
+    restored = state.replace("~", ".", 1)
+    payload = verify_payload(restored, secret, max_age_seconds=OAUTH_STATE_MAX_AGE_SECONDS)
+    if not payload:
+        return None
+    verifier = payload.get("verifier")
+    if isinstance(verifier, str) and 43 <= len(verifier) <= 128:
+        return verifier
+    return None
+
+
+def sign_oauth_state_cookie(state: str, secret: str, code_verifier: str = "") -> str:
+    """Signed value for the Google OAuth ``state`` and PKCE verifier cookie."""
+    return sign_payload({"state": state, "verifier": code_verifier}, secret)
+
+
+def verify_oauth_state_cookie(value: str | None, secret: str) -> dict[str, str] | None:
+    """Return ``{state, verifier}`` from the handshake cookie, or ``None``."""
     payload = verify_payload(value, secret, max_age_seconds=OAUTH_STATE_MAX_AGE_SECONDS)
     if not payload:
         return None
     state = payload.get("state")
-    return str(state) if isinstance(state, str) and state else None
+    if not isinstance(state, str) or not state:
+        return None
+    verifier = payload.get("verifier")
+    return {
+        "state": state,
+        "verifier": str(verifier) if isinstance(verifier, str) else "",
+    }
 
 
 def browser_credentials_from_token_dict(token_dict: Mapping[str, Any]) -> dict[str, Any]:
