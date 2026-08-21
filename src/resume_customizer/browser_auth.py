@@ -133,15 +133,20 @@ def cookie_assignments() -> list[dict[str, Any]]:
     return assignments
 
 
-def sync_cookies() -> None:
+def sync_cookies(*, key: str = "rc_cookie_sync") -> None:
     """Write the current session into browser cookies (or clear them)."""
     assignments = cookie_assignments()
     if not assignments:
         return
-    _cookie_bridge(cookies=assignments, authUrl="", key="rc_cookie_sync")
+    _cookie_bridge(cookies=assignments, key=key)
 
 
 def render_connect_google_button(auth_url: str) -> None:
-    """Connect Google control that stores cookies, then leaves for Google."""
-    assignments = cookie_assignments()
-    _cookie_bridge(cookies=assignments, authUrl=auth_url, key="rc_google_connect")
+    """Store handshake cookies, then show a normal link to Google.
+
+    The control must be a Streamlit ``link_button`` on the main page. A button
+    inside the cookie iframe cannot send the browser to Google (the iframe is
+    sandboxed).
+    """
+    sync_cookies(key="rc_google_connect_cookies")
+    st.link_button("Connect Google", auth_url)

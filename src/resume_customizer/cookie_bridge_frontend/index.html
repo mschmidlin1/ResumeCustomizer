@@ -5,16 +5,10 @@
     <style>
       body {
         margin: 0;
-        font-family: sans-serif;
-      }
-      button {
-        padding: 0.35rem 0.85rem;
-        cursor: pointer;
       }
     </style>
   </head>
   <body>
-    <button id="connect" type="button" hidden>Connect Google</button>
     <script>
       function post(type, extra) {
         window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra || {}), "*");
@@ -44,30 +38,12 @@
         });
       }
 
-      let args = {};
       window.addEventListener("message", function (event) {
         if (!event.data || event.data.type !== "streamlit:render") {
           return;
         }
-        args = event.data.args || {};
-        applyCookies(args.cookies);
-        const authUrl = args.authUrl || "";
-        const btn = document.getElementById("connect");
-        if (authUrl) {
-          btn.hidden = false;
-          Streamlit.setFrameHeight(52);
-        } else {
-          btn.hidden = true;
-          Streamlit.setFrameHeight(0);
-        }
-      });
-
-      document.getElementById("connect").addEventListener("click", function () {
-        applyCookies(args.cookies);
-        const authUrl = args.authUrl || "";
-        if (authUrl) {
-          window.top.location.href = authUrl;
-        }
+        applyCookies((event.data.args || {}).cookies);
+        Streamlit.setFrameHeight(0);
       });
 
       Streamlit.setComponentReady();
