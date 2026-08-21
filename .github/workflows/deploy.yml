@@ -40,11 +40,46 @@ jobs:
           RESUME_CUSTOMIZER_DB: ${{ secrets.RESUME_CUSTOMIZER_DB }}
           APP_AUTH_PASSWORD: ${{ secrets.APP_AUTH_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_APP_ID: ${{ secrets.GOOGLE_APP_ID }}
+          GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
         run: |
+          toml="$(mktemp)"
+          trap 'rm -f "$toml"' EXIT
+          TOML_PATH="$toml" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def esc(value: str) -> str:
+              return value.replace("\\", "\\\\").replace('"', '\\"')
+
+          lines = [
+              "[auth]",
+              f'password = "{esc(os.environ["APP_AUTH_PASSWORD"])}"',
+              "",
+              "[anthropic]",
+              f'api_key = "{esc(os.environ["ANTHROPIC_API_KEY"])}"',
+          ]
+          client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+          if client_id:
+              redirect = os.environ.get("GOOGLE_REDIRECT_URI", "").strip() or "https://customizer.schmidlin.casa"
+              lines += [
+                  "",
+                  "[google]",
+                  f'client_id = "{esc(client_id)}"',
+                  f'client_secret = "{esc(os.environ.get("GOOGLE_CLIENT_SECRET", ""))}"',
+                  f'api_key = "{esc(os.environ.get("GOOGLE_API_KEY", ""))}"',
+                  f'app_id = "{esc(os.environ.get("GOOGLE_APP_ID", ""))}"',
+                  f'redirect_uri = "{esc(redirect)}"',
+              ]
+          Path(os.environ["TOML_PATH"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
           kubectl -n resume-customizer create secret generic resume-customizer-secrets \
             --from-literal=MONGODB_URI="$MONGODB_URI" \
             --from-literal=RESUME_CUSTOMIZER_DB="$RESUME_CUSTOMIZER_DB" \
-            --from-literal=secrets.toml="$(printf '[auth]\npassword = "%s"\n\n[anthropic]\napi_key = "%s"\n' "$APP_AUTH_PASSWORD" "$ANTHROPIC_API_KEY")" \
+            --from-file=secrets.toml="$toml" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Roll out new image

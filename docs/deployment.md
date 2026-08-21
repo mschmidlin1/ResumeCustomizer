@@ -40,7 +40,7 @@ For background on how those pieces fit together, see the Valhalla docs at `~/rep
 |---|---------|-------------------|
 | **Runtime** | nginx serving static files | Streamlit (Python) |
 | **Container port** | 80 | 8501 |
-| **Secrets** | None | `secrets.toml` (auth + Anthropic API key) via K8s Secret |
+| **Secrets** | None | `secrets.toml` (auth, Anthropic, optional Google OAuth) via K8s Secret |
 | **Database** | None | MongoDB on **Vanaheim** (not in-cluster) |
 | **Image size** | Large (`.wav` assets) | Large (TeX Live packages) — first build/pull is slow |
 
@@ -94,7 +94,9 @@ Visitors **Connect Google** with their own account. The OAuth **web** client mus
 - `http://localhost:8501` — local Streamlit
 - `https://customizer.schmidlin.casa` — this production host
 
-Also enable Drive API, Docs API, and Picker API, and restrict the Picker API key HTTP referrers to those hosts. Optional `redirect_uri` in `[google]` overrides origin detection (useful if `X-Forwarded-Proto` is wrong behind the tunnel). Do not put visitor OAuth tokens in MongoDB or the K8s Secret; they stay in the Streamlit session. The K8s `secrets.toml` only needs `[google]` client_id / client_secret / api_key / app_id if you enable the feature.
+Also enable Drive API, Docs API, and Picker API, and restrict the Picker API key HTTP referrers to those hosts. Optional `redirect_uri` in `[google]` overrides origin detection (useful if `X-Forwarded-Proto` is wrong behind the tunnel). Do not put visitor OAuth tokens in MongoDB or the K8s Secret; they stay in the Streamlit session.
+
+The **app** Google Cloud client id/secret/API key **do** belong in the mounted `secrets.toml`. Deploy ([`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)) builds that file from GitHub Actions secrets (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_API_KEY`, `GOOGLE_APP_ID`, optional `GOOGLE_REDIRECT_URI`) and applies `resume-customizer-secrets`, which the pod already mounts at `/app/.streamlit/secrets.toml`. If `GOOGLE_CLIENT_ID` is omitted, `[google]` is left out and Connect Google stays disabled.
 
 ---
 
@@ -635,11 +637,46 @@ jobs:
           RESUME_CUSTOMIZER_DB: ${{ secrets.RESUME_CUSTOMIZER_DB }}
           APP_AUTH_PASSWORD: ${{ secrets.APP_AUTH_PASSWORD }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_APP_ID: ${{ secrets.GOOGLE_APP_ID }}
+          GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
         run: |
+          toml="$(mktemp)"
+          trap 'rm -f "$toml"' EXIT
+          TOML_PATH="$toml" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def esc(value: str) -> str:
+              return value.replace("\\", "\\\\").replace('"', '\\"')
+
+          lines = [
+              "[auth]",
+              f'password = "{esc(os.environ["APP_AUTH_PASSWORD"])}"',
+              "",
+              "[anthropic]",
+              f'api_key = "{esc(os.environ["ANTHROPIC_API_KEY"])}"',
+          ]
+          client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+          if client_id:
+              redirect = os.environ.get("GOOGLE_REDIRECT_URI", "").strip() or "https://customizer.schmidlin.casa"
+              lines += [
+                  "",
+                  "[google]",
+                  f'client_id = "{esc(client_id)}"',
+                  f'client_secret = "{esc(os.environ.get("GOOGLE_CLIENT_SECRET", ""))}"',
+                  f'api_key = "{esc(os.environ.get("GOOGLE_API_KEY", ""))}"',
+                  f'app_id = "{esc(os.environ.get("GOOGLE_APP_ID", ""))}"',
+                  f'redirect_uri = "{esc(redirect)}"',
+              ]
+          Path(os.environ["TOML_PATH"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
           kubectl -n resume-customizer create secret generic resume-customizer-secrets \
             --from-literal=MONGODB_URI="$MONGODB_URI" \
             --from-literal=RESUME_CUSTOMIZER_DB="$RESUME_CUSTOMIZER_DB" \
-            --from-literal=secrets.toml="$(printf '[auth]\npassword = "%s"\n\n[anthropic]\napi_key = "%s"\n' "$APP_AUTH_PASSWORD" "$ANTHROPIC_API_KEY")" \
+            --from-file=secrets.toml="$toml" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Roll out new image
@@ -676,6 +713,13 @@ The deploy workflow (Phase 4) reads these secrets and creates the in-cluster `re
 | `RESUME_CUSTOMIZER_DB` | `resume_customizer` |
 | `APP_AUTH_PASSWORD` | Streamlit sign-in password (choose a value) |
 | `ANTHROPIC_API_KEY` | Your Claude API key (`sk-ant-...`) |
+| `GOOGLE_CLIENT_ID` | OAuth web client id (`….apps.googleusercontent.com`) |
+| `GOOGLE_CLIENT_SECRET` | OAuth web client secret |
+| `GOOGLE_API_KEY` | Picker / Google Cloud API key |
+| `GOOGLE_APP_ID` | Cloud project number (OAuth client id prefix before `-`) |
+| `GOOGLE_REDIRECT_URI` | Optional; defaults to `https://customizer.schmidlin.casa` |
+
+If `GOOGLE_CLIENT_ID` is unset, the mounted `secrets.toml` has only `[auth]` and `[anthropic]` (LaTeX still works; Connect Google stays disabled). When `GOOGLE_CLIENT_ID` is set, the workflow appends `[google]` including `redirect_uri`.
 
 Mongo creates the `resume_customizer` database and `customization_cost_ledger` collection on first write — no manual database setup required. The deploy workflow assembles these into a Kubernetes Secret; see [Appendix — Kubernetes Secret shape](#appendix--kubernetes-secret-shape).
 
@@ -918,7 +962,7 @@ Expected on first run due to TeX Live in the Docker image. Later deploys reuse D
 - [ ] Self-hosted runner registered for Resume Customizer on **Valhalla** (Idle/Active)
 - [ ] `.github/workflows/deploy.yml` committed on `main`
 - [ ] GitHub Actions workflow permissions set to read/write
-- [ ] GitHub Actions secrets set (`MONGODB_URI`, `RESUME_CUSTOMIZER_DB`, `APP_AUTH_PASSWORD`, `ANTHROPIC_API_KEY`)
+- [ ] GitHub Actions secrets set (`MONGODB_URI`, `RESUME_CUSTOMIZER_DB`, `APP_AUTH_PASSWORD`, `ANTHROPIC_API_KEY`, and Google keys if enabling Docs)
 - [ ] **Deploy** workflow run succeeded on push to `main`
 - [ ] `kubectl get pods -n resume-customizer` → Running `1/1`
 - [ ] In-cluster curl to `/_stcore/health` → HTTP 200
@@ -950,6 +994,13 @@ stringData:
 
     [anthropic]
     api_key = "<ANTHROPIC_API_KEY>"
+
+    [google]
+    client_id = "<GOOGLE_CLIENT_ID>"
+    client_secret = "<GOOGLE_CLIENT_SECRET>"
+    api_key = "<GOOGLE_API_KEY>"
+    app_id = "<GOOGLE_APP_ID>"
+    redirect_uri = "https://customizer.schmidlin.casa"
 ```
 
 ---

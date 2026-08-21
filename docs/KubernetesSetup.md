@@ -167,11 +167,13 @@ jobs:
   4. `docker push` both tags.
   5. Render and apply the Kubernetes Secret from GitHub secrets (so the source of truth is GitHub):
 
+     The workflow writes `secrets.toml` (auth, Anthropic, and `[google]` when `GOOGLE_CLIENT_ID` is set) then:
+
      ```bash
      kubectl -n resume-customizer create secret generic resume-customizer-secrets \
        --from-literal=MONGODB_URI="$MONGODB_URI" \
        --from-literal=RESUME_CUSTOMIZER_DB="$RESUME_CUSTOMIZER_DB" \
-       --from-literal=secrets.toml="$(printf '[auth]\npassword = "%s"\n\n[anthropic]\napi_key = "%s"\n' "$APP_AUTH_PASSWORD" "$ANTHROPIC_API_KEY")" \
+       --from-file=secrets.toml="$toml" \
        --dry-run=client -o yaml | kubectl apply -f -
      ```
 
@@ -258,6 +260,8 @@ Work happens on a feature branch (e.g. `kubernetes-setup`), then a PR merges to 
    - `APP_AUTH_PASSWORD` — the sign-in password the Streamlit app checks
    - `MONGODB_URI` — e.g. `mongodb://192.168.50.116:27017`
    - `RESUME_CUSTOMIZER_DB` — e.g. `resume_customizer`
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_API_KEY`, `GOOGLE_APP_ID` — optional; enable Connect Google in the pod
+   - `GOOGLE_REDIRECT_URI` — optional; defaults to `https://customizer.schmidlin.casa`
 5. **(After first successful push)** go to your profile → Packages → `resumecustomizer`, and either keep it public (simpler; recommended) or set it private and add a Personal Access Token / GHCR pull secret to the cluster.
 
 ### 3.2 On login.tailscale.com (admin console)
