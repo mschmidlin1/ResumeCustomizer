@@ -225,15 +225,12 @@ def render_main() -> None:
         google_handle = google_editor.render_source_controls()
     with col_upload:
         st.subheader("Upload")
-        st.caption(
-            "Drag and drop **.tex** (or **.docx**) onto the bordered area, or click **Browse files**. "
-            "Word `.docx` is not implemented yet."
-        )
+        st.caption("Drag and drop a **.tex** resume onto the bordered area, or click **Browse files**.")
         uploaded_files = st.file_uploader(
-            "Resume (.tex or .docx)",
-            type=["tex", "docx"],
+            "Resume (.tex)",
+            type=["tex"],
             accept_multiple_files=True,
-            help="Self-contained .tex for LaTeX. Multiple files: Run uses the first. .docx coming later.",
+            help="Self-contained .tex for LaTeX. Multiple files: Run uses the first.",
         )
 
     uploaded = uploaded_files[0] if uploaded_files else None
