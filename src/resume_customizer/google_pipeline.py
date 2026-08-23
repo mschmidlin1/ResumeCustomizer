@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import anthropic
 
 from resume_customizer.claude_service import ClaudeCustomizationService, CustomizationUsage
-from resume_customizer.editors.base import LedgerUsage, RunSettings
+from resume_customizer.editors.base import RunSettings
 from resume_customizer.filenames import download_base_from_job_title, with_download_disambiguation
 from resume_customizer.google_docs_ops import (
     GoogleDocsApplyError,
@@ -23,72 +23,13 @@ from resume_customizer.google_workspace import (
     find_or_create_folder,
     get_document,
 )
+from resume_customizer.page_budget import CondensePassResult, enforce_page_budget
 from resume_customizer.parsing import CustomizationParseError, ReplacementPayload, parse_replacement_payload
 from resume_customizer.pdf_pages import count_pdf_pages
+from resume_customizer.prompts import REPLACEMENT_JSON_SCHEMA, compose_google_system_prompt
 
-GOOGLE_SYSTEM_PROMPT = """You are an expert resume editor. Given numbered text blocks from a Google Doc
-resume and a job description, rewrite block wording to highlight the most relevant experience while
-preserving truthfulness. Do not add or delete blocks. Do not change layout.
-
-The user message includes SOURCE_PDF_PAGE_COUNT: that value was measured by exporting the original
-Google Doc to PDF. After your replacements are applied, the customized Doc must export to at most
-that many PDF pages—do not rely on guessing from the source alone.
-
-Truth and emphasis:
-- The summary/professional profile must match the scope and emphasis of the experience section: do not promote
-  occasional or partial work to a primary career narrative.
-- Do not introduce claims, themes, or implied career emphasis in the summary that are not clearly supported by the
-  rest of the resume (roles, bullets, tenure).
-- Do not imply years of focus or end-to-end ownership for themes that appear only lightly in the body; use
-  proportionate phrasing (e.g. exposure to, supported, contributions to, some experience with) or soften rather than
-  stretch.
-- If in doubt, soften the summary rather than stretch it.
-
-Operational rules:
-- Only reword existing blocks; do not add or delete blocks.
-- In skills lines, weave relevant job-description terminology by rephrasing existing text; do not add skills the
-  resume does not support.
-- Prefer tightening wording over adding clauses. If you add a keyword, swap or compress nearby text to compensate.
-- Never invent employers, dates, degrees, or tools.
-- Omit unchanged blocks from replacements (identity replacements are allowed).
-"""
-
-_JSON_REPLACEMENTS_SUFFIX = (
-    "\n\nYou MUST respond with ONLY a single JSON object and no other text or markdown. "
-    'The object must have exactly two keys: "job_title" (a short string for a filename, '
-    'describing the role) and "replacements" (an array of objects, each with integer "block_id" '
-    'and non-empty string "text").'
-)
-
-REPLACEMENT_JSON_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["job_title", "replacements"],
-    "properties": {
-        "job_title": {"type": "string"},
-        "replacements": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["block_id", "text"],
-                "properties": {
-                    "block_id": {"type": "integer"},
-                    "text": {"type": "string"},
-                },
-            },
-        },
-    },
-}
-
-_CONDENSE_SUFFIX = (
-    "\n\nAdditional instructions for this turn only: The Google Doc currently exports to too many PDF pages. "
-    "Revise RESUME_BLOCKS so that a PDF export has at most TARGET_PDF_PAGE_COUNT pages "
-    "(see the user message for the exact target and current page count). "
-    "Shorten by merging bullets, tightening phrasing, and removing non-essential words. Do not remove "
-    "factual claims, employers, dates, degrees, or tools the candidate actually used; do not invent content. "
-    "Do not add or delete blocks."
-)
+# Re-export for callers/tests that imported the schema from this module.
+__all__ = ["GooglePipelineResult", "REPLACEMENT_JSON_SCHEMA", "run_google_customization"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +37,7 @@ class GooglePipelineResult:
     """Artifacts from a Google Docs customization run."""
 
     job_title: str = ""
-    usages: tuple[LedgerUsage, ...] = ()
+    usages: tuple[CustomizationUsage, ...] = ()
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
     captions: tuple[str, ...] = ()
@@ -110,13 +51,31 @@ class GooglePipelineResult:
     condense_succeeded: bool = False
 
 
-def _ledger(usage: CustomizationUsage) -> LedgerUsage:
-    return LedgerUsage(
-        model=usage.model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        estimated_cost_usd=usage.estimated_cost_usd,
-    )
+@dataclass
+class _GoogleRunContext:
+    """Mutable state for one Google Docs customize → condense run."""
+
+    drive: object
+    docs: object
+    file_id: str
+    file_name: str
+    job_text: str
+    settings: RunSettings
+    claude: ClaudeCustomizationService
+    source_pages: int
+    captions: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)
+    usages: list[CustomizationUsage] = field(default_factory=list)
+    job_title: str = ""
+    download_base: str = ""
+    copy_url: str = ""
+    copy_id: str = ""
+    output_pdf: bytes = b""
+    output_pages: int | None = None
+    condense_succeeded: bool = False
+    last_run_ok: bool = False
 
 
 def _blocks_user_message(
@@ -164,6 +123,205 @@ def _call_replacements(
     return parse_replacement_payload(raw), usage
 
 
+def _measure_source(drive: object, file_id: str) -> tuple[int, str] | GooglePipelineResult:
+    try:
+        source_pdf = export_pdf(drive, file_id)
+        source_pages = count_pdf_pages(source_pdf)
+    except (GoogleWorkspaceError, ValueError) as exc:
+        return GooglePipelineResult(
+            errors=(
+                "Could not export the original Google Doc to PDF, so the source page count is unknown. "
+                f"{exc}",
+            ),
+        )
+    caption = f"Source resume: **{source_pages}** PDF page(s) (measured via Google PDF export)."
+    return source_pages, caption
+
+
+def _first_pass(ctx: _GoogleRunContext) -> GooglePipelineResult | None:
+    """Customize via Claude, copy Doc, apply replacements. Return early result on failure."""
+    try:
+        original_doc = get_document(ctx.docs, ctx.file_id)
+    except GoogleWorkspaceError as exc:
+        return GooglePipelineResult(captions=tuple(ctx.captions), errors=(str(exc),))
+
+    original_blocks = extract_text_blocks(original_doc)
+    if not original_blocks:
+        return GooglePipelineResult(
+            captions=tuple(ctx.captions),
+            errors=("This Google Doc has no extractable text blocks.",),
+        )
+
+    blocks_text = format_blocks_for_model(original_blocks)
+    try:
+        payload, usage = _call_replacements(
+            ctx.claude,
+            system_text=compose_google_system_prompt(ctx.settings.system_prompt, condense=False),
+            user_content=_blocks_user_message(
+                job_description=ctx.job_text,
+                blocks_text=blocks_text,
+                source_pdf_page_count=ctx.source_pages,
+            ),
+            settings=ctx.settings,
+        )
+    except CustomizationParseError as exc:
+        return GooglePipelineResult(
+            captions=tuple(ctx.captions),
+            errors=(f"Could not parse model output: {exc}",),
+        )
+    except anthropic.APIError as exc:
+        return GooglePipelineResult(
+            captions=tuple(ctx.captions),
+            errors=(f"Anthropic API error: {exc}",),
+        )
+    except Exception as exc:
+        return GooglePipelineResult(
+            captions=tuple(ctx.captions),
+            errors=(f"Unexpected error: {exc}",),
+        )
+
+    ctx.usages.append(usage)
+    ctx.job_title = payload.job_title
+    ctx.download_base = with_download_disambiguation(
+        download_base_from_job_title(ctx.job_title, ctx.file_name)
+    )
+
+    try:
+        folder_id = find_or_create_folder(ctx.drive)
+        copied = copy_doc_into_folder(
+            ctx.drive,
+            file_id=ctx.file_id,
+            folder_id=folder_id,
+            name=ctx.download_base,
+        )
+        ctx.copy_id = copied["id"]
+        ctx.copy_url = copied["webViewLink"]
+        copy_doc = get_document(ctx.docs, ctx.copy_id)
+        copy_blocks = extract_text_blocks(copy_doc)
+        requests = replacement_batch_requests(copy_blocks, payload.replacements)
+        batch_update(ctx.docs, ctx.copy_id, requests)
+    except (GoogleWorkspaceError, GoogleDocsApplyError) as exc:
+        ctx.errors.append(str(exc))
+        if ctx.copy_url:
+            ctx.warnings.append(
+                "A copy may exist in Google Drive, but customization did not finish. "
+                "The original Doc was not changed."
+            )
+        return GooglePipelineResult(
+            job_title=ctx.job_title,
+            usages=tuple(ctx.usages),
+            warnings=tuple(ctx.warnings),
+            errors=tuple(ctx.errors),
+            captions=tuple(ctx.captions),
+            google_doc_url=ctx.copy_url,
+            download_base_name=ctx.download_base,
+        )
+    return None
+
+
+def _export_output_pages(ctx: _GoogleRunContext) -> GooglePipelineResult | None:
+    """Export customized copy PDF; return early result if export fails."""
+    try:
+        ctx.output_pdf = export_pdf(ctx.drive, ctx.copy_id)
+        ctx.output_pages = count_pdf_pages(ctx.output_pdf)
+    except (GoogleWorkspaceError, ValueError) as exc:
+        ctx.warnings.append(
+            "The customized Google Doc was created, but PDF export failed so the page count "
+            f"could not be verified. You can still open the Doc to review. {exc}"
+        )
+        return GooglePipelineResult(
+            job_title=ctx.job_title,
+            usages=tuple(ctx.usages),
+            warnings=tuple(ctx.warnings),
+            captions=tuple(ctx.captions),
+            info_messages=("Resume customized. Open the Google Doc to review.",),
+            google_doc_url=ctx.copy_url,
+            download_base_name=ctx.download_base,
+            last_run_ok=True,
+            source_pages=ctx.source_pages,
+        )
+    return None
+
+
+def _condense_if_needed(ctx: _GoogleRunContext) -> None:
+    """Run shared page-budget loop when the customized export is over source pages."""
+    if ctx.output_pages is None:
+        return
+
+    def attempt_condense() -> CondensePassResult:
+        after_doc = get_document(ctx.docs, ctx.copy_id)
+        after_blocks = extract_text_blocks(after_doc)
+        after_text = format_blocks_for_model(after_blocks)
+        repair_payload, repair_usage = _call_replacements(
+            ctx.claude,
+            system_text=compose_google_system_prompt(ctx.settings.system_prompt, condense=True),
+            user_content=_blocks_user_message(
+                job_description=ctx.job_text,
+                blocks_text=after_text,
+                target_pdf_page_count=ctx.source_pages,
+                measured_pdf_page_count=ctx.output_pages,
+            ),
+            settings=ctx.settings,
+        )
+        ctx.job_title = repair_payload.job_title
+        ctx.download_base = with_download_disambiguation(
+            download_base_from_job_title(ctx.job_title, ctx.file_name)
+        )
+        try:
+            fresh = get_document(ctx.docs, ctx.copy_id)
+            fresh_blocks = extract_text_blocks(fresh)
+            batch_update(
+                ctx.docs,
+                ctx.copy_id,
+                replacement_batch_requests(fresh_blocks, repair_payload.replacements),
+            )
+            ctx.output_pdf = export_pdf(ctx.drive, ctx.copy_id)
+            pages = count_pdf_pages(ctx.output_pdf)
+        except (GoogleWorkspaceError, GoogleDocsApplyError, ValueError) as exc:
+            return CondensePassResult(
+                output_pages=ctx.output_pages or 0,
+                usage=repair_usage,
+                warnings=(
+                    f"Condense edits could not be applied or re-exported ({exc}). "
+                    "Keeping the first customized version. The original Doc was not changed.",
+                ),
+                remeasured=False,
+            )
+        return CondensePassResult(output_pages=pages, usage=repair_usage, remeasured=True)
+
+    budget = enforce_page_budget(
+        source_pages=ctx.source_pages,
+        output_pages=ctx.output_pages,
+        attempt_condense=attempt_condense,
+        still_over_manual_hint="Review or tighten the Google Doc manually.",
+    )
+    ctx.output_pages = budget.output_pages
+    ctx.warnings.extend(budget.warnings)
+    if budget.usage is not None:
+        ctx.usages.append(budget.usage)
+    ctx.condense_succeeded = budget.condense_succeeded
+
+
+def _build_result(ctx: _GoogleRunContext) -> GooglePipelineResult:
+    ctx.last_run_ok = True
+    ctx.info.append("Resume customized and PDF page check finished.")
+    return GooglePipelineResult(
+        job_title=ctx.job_title,
+        usages=tuple(ctx.usages),
+        warnings=tuple(ctx.warnings),
+        errors=tuple(ctx.errors),
+        captions=tuple(ctx.captions),
+        info_messages=tuple(ctx.info),
+        google_doc_url=ctx.copy_url,
+        output_pdf=ctx.output_pdf,
+        download_base_name=ctx.download_base,
+        last_run_ok=ctx.last_run_ok,
+        source_pages=ctx.source_pages,
+        output_pages=ctx.output_pages,
+        condense_succeeded=ctx.condense_succeeded,
+    )
+
+
 def run_google_customization(
     *,
     drive: object,
@@ -178,204 +336,30 @@ def run_google_customization(
 
     Never writes to ``file_id``. Failures after a successful copy still return the copy URL when possible.
     """
-    captions: list[str] = []
-    warnings: list[str] = []
-    errors: list[str] = []
-    info: list[str] = []
-    usages: list[LedgerUsage] = []
+    measured = _measure_source(drive, file_id)
+    if isinstance(measured, GooglePipelineResult):
+        return measured
+    source_pages, caption = measured
 
-    try:
-        source_pdf = export_pdf(drive, file_id)
-        source_pages = count_pdf_pages(source_pdf)
-    except (GoogleWorkspaceError, ValueError) as exc:
-        return GooglePipelineResult(
-            errors=(
-                "Could not export the original Google Doc to PDF, so the source page count is unknown. "
-                f"{exc}",
-            ),
-        )
-
-    captions.append(
-        f"Source resume: **{source_pages}** PDF page(s) (measured via Google PDF export)."
-    )
-
-    try:
-        original_doc = get_document(docs, file_id)
-    except GoogleWorkspaceError as exc:
-        return GooglePipelineResult(captions=tuple(captions), errors=(str(exc),))
-
-    original_blocks = extract_text_blocks(original_doc)
-    if not original_blocks:
-        return GooglePipelineResult(
-            captions=tuple(captions),
-            errors=("This Google Doc has no extractable text blocks.",),
-        )
-
-    blocks_text = format_blocks_for_model(original_blocks)
-    try:
-        payload, usage = _call_replacements(
-            claude,
-            system_text=GOOGLE_SYSTEM_PROMPT + _JSON_REPLACEMENTS_SUFFIX,
-            user_content=_blocks_user_message(
-                job_description=job_text,
-                blocks_text=blocks_text,
-                source_pdf_page_count=source_pages,
-            ),
-            settings=settings,
-        )
-    except CustomizationParseError as exc:
-        return GooglePipelineResult(
-            captions=tuple(captions),
-            errors=(f"Could not parse model output: {exc}",),
-        )
-    except anthropic.APIError as exc:
-        return GooglePipelineResult(
-            captions=tuple(captions),
-            errors=(f"Anthropic API error: {exc}",),
-        )
-    except Exception as exc:
-        return GooglePipelineResult(
-            captions=tuple(captions),
-            errors=(f"Unexpected error: {exc}",),
-        )
-
-    usages.append(_ledger(usage))
-    job_title = payload.job_title
-    download_base = with_download_disambiguation(
-        download_base_from_job_title(job_title, file_name)
-    )
-    copy_url = ""
-    copy_id = ""
-    output_pdf = b""
-    output_pages: int | None = None
-    condense_succeeded = False
-    last_run_ok = False
-
-    try:
-        folder_id = find_or_create_folder(drive)
-        copied = copy_doc_into_folder(
-            drive,
-            file_id=file_id,
-            folder_id=folder_id,
-            name=download_base,
-        )
-        copy_id = copied["id"]
-        copy_url = copied["webViewLink"]
-        copy_doc = get_document(docs, copy_id)
-        copy_blocks = extract_text_blocks(copy_doc)
-        requests = replacement_batch_requests(copy_blocks, payload.replacements)
-        batch_update(docs, copy_id, requests)
-    except (GoogleWorkspaceError, GoogleDocsApplyError) as exc:
-        errors.append(str(exc))
-        if copy_url:
-            warnings.append(
-                "A copy may exist in Google Drive, but customization did not finish. "
-                "The original Doc was not changed."
-            )
-        return GooglePipelineResult(
-            job_title=job_title,
-            usages=tuple(usages),
-            warnings=tuple(warnings),
-            errors=tuple(errors),
-            captions=tuple(captions),
-            google_doc_url=copy_url,
-            download_base_name=download_base,
-        )
-
-    try:
-        output_pdf = export_pdf(drive, copy_id)
-        output_pages = count_pdf_pages(output_pdf)
-    except (GoogleWorkspaceError, ValueError) as exc:
-        warnings.append(
-            "The customized Google Doc was created, but PDF export failed so the page count "
-            f"could not be verified. You can still open the Doc to review. {exc}"
-        )
-        return GooglePipelineResult(
-            job_title=job_title,
-            usages=tuple(usages),
-            warnings=tuple(warnings),
-            captions=tuple(captions),
-            info_messages=("Resume customized. Open the Google Doc to review.",),
-            google_doc_url=copy_url,
-            download_base_name=download_base,
-            last_run_ok=True,
-            source_pages=source_pages,
-        )
-
-    if output_pages > source_pages:
-        try:
-            after_doc = get_document(docs, copy_id)
-            after_blocks = extract_text_blocks(after_doc)
-            after_text = format_blocks_for_model(after_blocks)
-            repair_payload, repair_usage = _call_replacements(
-                claude,
-                system_text=GOOGLE_SYSTEM_PROMPT + _CONDENSE_SUFFIX + _JSON_REPLACEMENTS_SUFFIX,
-                user_content=_blocks_user_message(
-                    job_description=job_text,
-                    blocks_text=after_text,
-                    target_pdf_page_count=source_pages,
-                    measured_pdf_page_count=output_pages,
-                ),
-                settings=settings,
-            )
-        except CustomizationParseError as exc:
-            warnings.append(
-                f"Condense pass could not parse model output ({exc}). "
-                f"Keeping the first version (**{output_pages}** pages; target **{source_pages}**)."
-            )
-        except anthropic.APIError as exc:
-            warnings.append(
-                f"Condense pass API error ({exc}). "
-                f"Keeping the first version (**{output_pages}** pages; target **{source_pages}**)."
-            )
-        except Exception as exc:
-            warnings.append(
-                f"Condense pass failed ({exc}). "
-                f"Keeping the first version (**{output_pages}** pages; target **{source_pages}**)."
-            )
-        else:
-            usages.append(_ledger(repair_usage))
-            condense_succeeded = True
-            job_title = repair_payload.job_title
-            download_base = with_download_disambiguation(
-                download_base_from_job_title(job_title, file_name)
-            )
-            try:
-                fresh = get_document(docs, copy_id)
-                fresh_blocks = extract_text_blocks(fresh)
-                batch_update(
-                    docs,
-                    copy_id,
-                    replacement_batch_requests(fresh_blocks, repair_payload.replacements),
-                )
-                output_pdf = export_pdf(drive, copy_id)
-                output_pages = count_pdf_pages(output_pdf)
-            except (GoogleWorkspaceError, GoogleDocsApplyError, ValueError) as exc:
-                warnings.append(
-                    f"Condense edits could not be applied or re-exported ({exc}). "
-                    "Keeping the first customized version. The original Doc was not changed."
-                )
-            else:
-                if output_pages > source_pages:
-                    warnings.append(
-                        f"After the condense pass, the PDF still has **{output_pages}** page(s) "
-                        f"(target **{source_pages}**). Review or tighten the Google Doc manually."
-                    )
-
-    last_run_ok = True
-    info.append("Resume customized and PDF page check finished.")
-    return GooglePipelineResult(
-        job_title=job_title,
-        usages=tuple(usages),
-        warnings=tuple(warnings),
-        errors=tuple(errors),
-        captions=tuple(captions),
-        info_messages=tuple(info),
-        google_doc_url=copy_url,
-        output_pdf=output_pdf,
-        download_base_name=download_base,
-        last_run_ok=last_run_ok,
+    ctx = _GoogleRunContext(
+        drive=drive,
+        docs=docs,
+        file_id=file_id,
+        file_name=file_name,
+        job_text=job_text,
+        settings=settings,
+        claude=claude,
         source_pages=source_pages,
-        output_pages=output_pages,
-        condense_succeeded=condense_succeeded,
+        captions=[caption],
     )
+
+    early = _first_pass(ctx)
+    if early is not None:
+        return early
+
+    early = _export_output_pages(ctx)
+    if early is not None:
+        return early
+
+    _condense_if_needed(ctx)
+    return _build_result(ctx)

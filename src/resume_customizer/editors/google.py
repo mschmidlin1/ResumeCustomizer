@@ -24,6 +24,7 @@ from resume_customizer.google_auth import (
 )
 from resume_customizer.google_docs_ops import GOOGLE_DOC_MIME
 from resume_customizer.google_pipeline import run_google_customization
+from resume_customizer.secrets_config import get_google_secrets
 
 
 def clear_google_session() -> None:
@@ -43,30 +44,6 @@ def _clear_oauth_handshake() -> None:
     """Drop the in-progress Google OAuth handshake (not finished tokens)."""
     for key in ("google_oauth_state", "google_oauth_code_verifier", "google_auth_url"):
         st.session_state.pop(key, None)
-
-
-def _google_secrets() -> dict[str, str] | None:
-    """Return Google Cloud secrets, or ``None`` if incomplete."""
-    try:
-        block = st.secrets.get("google", {})
-    except Exception:
-        return None
-    client_id = str(block.get("client_id") or "").strip()
-    client_secret = str(block.get("client_secret") or "").strip()
-    api_key = str(block.get("api_key") or "").strip()
-    app_id = str(block.get("app_id") or "").strip()
-    if client_id and not app_id:
-        app_id = client_id.split("-", 1)[0]
-    if not client_id or not client_secret or not api_key or not app_id:
-        return None
-    redirect_uri = str(block.get("redirect_uri") or "").strip()
-    return {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "api_key": api_key,
-        "app_id": app_id,
-        "redirect_uri": redirect_uri,
-    }
 
 
 def _infer_redirect_uri(configured: str) -> str:
@@ -159,7 +136,7 @@ class GoogleEditor:
     def render_source_controls(self) -> SourceHandle | None:
         """Connect Google, Drive picker, and optional selected-file caption."""
         st.subheader("Google Drive")
-        secrets = _google_secrets()
+        secrets = get_google_secrets()
         if secrets is None:
             st.caption(
                 "Add `[google]` `client_id`, `client_secret`, `api_key`, and `app_id` "
@@ -253,7 +230,7 @@ class GoogleEditor:
             )
 
         with st.spinner("Customizing Google Doc (includes PDF page check)...", show_time=True):
-            piped = run_google_customization(
+            pipeline_result = run_google_customization(
                 drive=drive,
                 docs=docs,
                 claude=claude,
@@ -265,19 +242,19 @@ class GoogleEditor:
 
         return EditorRunResult(
             editor_id=self.id,
-            job_title=piped.job_title,
-            usages=piped.usages,
-            warnings=piped.warnings,
-            errors=piped.errors,
-            info_messages=piped.info_messages,
-            captions=piped.captions,
-            output_pdf=piped.output_pdf,
-            download_base_name=piped.download_base_name,
-            last_run_ok=piped.last_run_ok,
-            google_doc_url=piped.google_doc_url,
-            source_pages=piped.source_pages,
-            output_pages=piped.output_pages,
-            condense_succeeded=piped.condense_succeeded,
+            job_title=pipeline_result.job_title,
+            usages=pipeline_result.usages,
+            warnings=pipeline_result.warnings,
+            errors=pipeline_result.errors,
+            info_messages=pipeline_result.info_messages,
+            captions=pipeline_result.captions,
+            output_pdf=pipeline_result.output_pdf,
+            download_base_name=pipeline_result.download_base_name,
+            last_run_ok=pipeline_result.last_run_ok,
+            google_doc_url=pipeline_result.google_doc_url,
+            source_pages=pipeline_result.source_pages,
+            output_pages=pipeline_result.output_pages,
+            condense_succeeded=pipeline_result.condense_succeeded,
         )
 
     def render_outputs(self, result: EditorRunResult) -> None:

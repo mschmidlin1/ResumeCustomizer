@@ -18,9 +18,10 @@ from resume_customizer.editors.base import (
 )
 from resume_customizer.editors.dispatch import resolve_resume_source
 from resume_customizer.editors.google import clear_google_session
-from resume_customizer.editors.latex import DEFAULT_PROMPT
 from resume_customizer.editors.registry import get_editor
 from resume_customizer.pricing import combine_estimated_run_cost_usd, format_usd_display, model_has_list_price
+from resume_customizer.prompts import DEFAULT_SYSTEM_PROMPT
+from resume_customizer.secrets_config import get_anthropic_api_key, get_auth_password
 
 MODEL_OPTIONS: list[str] = [
     "claude-sonnet-4-6",
@@ -50,7 +51,7 @@ def _init_session_state() -> None:
         st.session_state.authenticated = False
         restore_from_cookies()
     if "settings_prompt" not in st.session_state:
-        st.session_state.settings_prompt = DEFAULT_PROMPT
+        st.session_state.settings_prompt = DEFAULT_SYSTEM_PROMPT
     if "settings_model" not in st.session_state:
         st.session_state.settings_model = MODEL_OPTIONS[0]
     if "settings_temperature" not in st.session_state:
@@ -61,30 +62,6 @@ def _init_session_state() -> None:
         st.session_state.last_editor_result = None
     if st.session_state.settings_model not in MODEL_OPTIONS:
         st.session_state.settings_model = MODEL_OPTIONS[0]
-
-
-def _get_expected_password() -> str | None:
-    """Return the configured sign-in password, or ``None`` if unset."""
-    try:
-        auth = st.secrets.get("auth", {})
-        pwd = auth.get("password")
-        if pwd is not None and str(pwd).strip() != "":
-            return str(pwd)
-    except Exception:
-        return None
-    return None
-
-
-def _get_anthropic_api_key() -> str | None:
-    """Return the Anthropic API key from Streamlit secrets."""
-    try:
-        block = st.secrets.get("anthropic", {})
-        key = block.get("api_key")
-        if key is not None and str(key).strip() != "":
-            return str(key).strip()
-    except Exception:
-        return None
-    return None
 
 
 def _reset_outputs() -> None:
@@ -156,7 +133,7 @@ def render_public_home() -> None:
     st.markdown("[Privacy policy](?privacy=1)")
 
     st.subheader("Sign in")
-    expected = _get_expected_password()
+    expected = get_auth_password()
     if expected is None:
         st.error(
             "Authentication is not configured. Copy `.streamlit/secrets.toml.example` to "
@@ -217,7 +194,7 @@ def render_sidebar() -> None:
             clear_google_session()
             st.rerun()
 
-        api_key_ok = _get_anthropic_api_key() is not None
+        api_key_ok = get_anthropic_api_key() is not None
         if not api_key_ok:
             st.warning("Add `[anthropic]` `api_key` to `.streamlit/secrets.toml` to run customization.")
 
@@ -226,7 +203,10 @@ def render_sidebar() -> None:
                 "Prompt",
                 value=st.session_state.settings_prompt,
                 height=180,
-                help="System instructions for the LaTeX editor, plus a fixed JSON-only response rule.",
+                help=(
+                    "Shared editorial policy for LaTeX and Google Docs. Each editor prepends "
+                    "format-specific rules and a fixed JSON-only response requirement."
+                ),
             )
             st.session_state.settings_model = st.selectbox(
                 "Model",
@@ -251,9 +231,9 @@ def render_sidebar() -> None:
                 step=256,
             )
 
-        _mongo = _ledger_mongo_service()
-        _total_spend = _mongo.get_total()
-        st.metric("Total est. API spend", format_usd_display(_total_spend))
+        ledger = _ledger_mongo_service()
+        total_spend = ledger.get_total()
+        st.metric("Total est. API spend", format_usd_display(total_spend))
         st.caption("Estimated from each run’s token usage and list prices (MongoDB).")
 
 
@@ -294,63 +274,72 @@ def render_main() -> None:
 
     if run_clicked:
         _reset_outputs()
-        api_key = _get_anthropic_api_key()
+        api_key = get_anthropic_api_key()
         if api_key is None:
             st.error("Anthropic API key is not configured. Set `[anthropic]` `api_key` in `.streamlit/secrets.toml`.")
         elif not (job_text or "").strip():
             st.warning("Please paste a job description.")
         else:
-            google_file = None
-            google_creds = None
-            if google_handle is not None:
-                google_file = {
-                    "id": google_handle.google_file_id,
-                    "name": google_handle.google_file_name,
-                    "mimeType": google_handle.google_mime_type,
-                }
-                google_creds = google_handle.google_credentials
-            try:
-                source = resolve_resume_source(
-                    google_file=google_file,
-                    uploaded_name=(uploaded.name if uploaded is not None else None),
-                    uploaded_bytes=(uploaded.getvalue() if uploaded is not None else b""),
-                    google_credentials=google_creds,
-                )
-            except SourceResolutionError as exc:
-                st.warning(str(exc))
-            else:
-                try:
-                    editor = get_editor(source.editor_id)
-                except EditorNotImplementedError as exc:
-                    st.error(str(exc))
-                except KeyError as exc:
-                    st.error(str(exc))
-                else:
-                    settings = RunSettings(
-                        system_prompt=st.session_state.settings_prompt,
-                        model=st.session_state.settings_model,
-                        temperature=float(st.session_state.settings_temperature),
-                        max_tokens=int(st.session_state.settings_max_tokens),
-                        api_key=api_key,
-                    )
-                    claude = ClaudeCustomizationService(api_key=api_key)
-                    result = editor.run(source, job_text.strip(), claude, settings)
-                    st.session_state.last_editor_result = result
-                    _show_result_messages(result)
-                    for usage in result.usages:
-                        _persist_ledger_entry(
-                            ledger_entry_now(
-                                model=usage.model,
-                                input_tokens=usage.input_tokens,
-                                output_tokens=usage.output_tokens,
-                                estimated_cost_usd=usage.estimated_cost_usd,
-                            )
-                        )
-                    _show_run_cost(result)
+            _run_customization(google_handle, uploaded, job_text.strip(), api_key)
 
     last: EditorRunResult | None = st.session_state.last_editor_result
     if last is not None:
         get_editor(last.editor_id).render_outputs(last)
+
+
+def _run_customization(google_handle, uploaded, job_text: str, api_key: str) -> None:
+    """Resolve source, run editor, persist usage. Early-return on each failure."""
+    google_file = None
+    google_creds = None
+    if google_handle is not None:
+        google_file = {
+            "id": google_handle.google_file_id,
+            "name": google_handle.google_file_name,
+            "mimeType": google_handle.google_mime_type,
+        }
+        google_creds = google_handle.google_credentials
+
+    try:
+        source = resolve_resume_source(
+            google_file=google_file,
+            uploaded_name=(uploaded.name if uploaded is not None else None),
+            uploaded_bytes=(uploaded.getvalue() if uploaded is not None else b""),
+            google_credentials=google_creds,
+        )
+    except SourceResolutionError as exc:
+        st.warning(str(exc))
+        return
+
+    try:
+        editor = get_editor(source.editor_id)
+    except EditorNotImplementedError as exc:
+        st.error(str(exc))
+        return
+    except KeyError as exc:
+        st.error(str(exc))
+        return
+
+    settings = RunSettings(
+        system_prompt=st.session_state.settings_prompt,
+        model=st.session_state.settings_model,
+        temperature=float(st.session_state.settings_temperature),
+        max_tokens=int(st.session_state.settings_max_tokens),
+        api_key=api_key,
+    )
+    claude = ClaudeCustomizationService(api_key=api_key)
+    result = editor.run(source, job_text, claude, settings)
+    st.session_state.last_editor_result = result
+    _show_result_messages(result)
+    for usage in result.usages:
+        _persist_ledger_entry(
+            ledger_entry_now(
+                model=usage.model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                estimated_cost_usd=usage.estimated_cost_usd,
+            )
+        )
+    _show_run_cost(result)
 
 
 def main() -> None:

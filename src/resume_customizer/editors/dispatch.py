@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Mapping
 
 from resume_customizer.editors.base import (
     NoSourceError,
@@ -10,16 +11,15 @@ from resume_customizer.editors.base import (
     SourceHandle,
     UnsupportedUploadError,
 )
-
-_GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
+from resume_customizer.google_docs_ops import GOOGLE_DOC_MIME
 
 
 def resolve_resume_source(
     *,
-    google_file: dict[str, str] | None,
+    google_file: Mapping[str, str] | None,
     uploaded_name: str | None,
     uploaded_bytes: bytes = b"",
-    google_credentials: dict | None = None,
+    google_credentials: Mapping[str, Any] | None = None,
 ) -> SourceHandle:
     """Return a single source handle or raise a user-facing resolution error.
 
@@ -30,12 +30,12 @@ def resolve_resume_source(
         google_credentials: Session OAuth token dict for Drive/Docs clients.
 
     Returns:
-        :class:`SourceHandle` for ``latex``, ``google``, or ``docx``.
+        :class:`SourceHandle` for ``latex`` or ``google``.
 
     Raises:
         SourceConflictError: Both a Drive Doc and an upload are present.
         NoSourceError: Neither source is present.
-        UnsupportedUploadError: Extension is not ``.tex`` or ``.docx``, or Drive MIME is not a Doc.
+        UnsupportedUploadError: Extension is not ``.tex``, or Drive MIME is not a Doc.
     """
     has_google = bool(google_file and google_file.get("id"))
     has_upload = bool(uploaded_name)
@@ -46,16 +46,17 @@ def resolve_resume_source(
         raise NoSourceError("Pick a Google Doc or upload a resume file.")
 
     if has_google:
-        assert google_file is not None
+        if google_file is None:
+            raise NoSourceError("Pick a Google Doc or upload a resume file.")
         mime = str(google_file.get("mimeType") or "")
-        if mime and mime != _GOOGLE_DOC_MIME:
+        if mime and mime != GOOGLE_DOC_MIME:
             raise UnsupportedUploadError("Please pick a Google Doc (not Sheets, Slides, or a Drive file).")
         return SourceHandle(
             editor_id="google",
             filename=str(google_file.get("name") or "resume"),
             google_file_id=str(google_file["id"]),
             google_file_name=str(google_file.get("name") or "resume"),
-            google_mime_type=mime or _GOOGLE_DOC_MIME,
+            google_mime_type=mime or GOOGLE_DOC_MIME,
             google_credentials=dict(google_credentials or {}),
         )
 
@@ -63,6 +64,4 @@ def resolve_resume_source(
     ext = Path(name).suffix.lower()
     if ext == ".tex":
         return SourceHandle(editor_id="latex", filename=name, upload_bytes=uploaded_bytes)
-    if ext == ".docx":
-        return SourceHandle(editor_id="docx", filename=name, upload_bytes=uploaded_bytes)
-    raise UnsupportedUploadError("Upload a .tex or .docx file, or pick a Google Doc.")
+    raise UnsupportedUploadError("Upload a .tex file, or pick a Google Doc.")

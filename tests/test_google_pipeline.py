@@ -124,7 +124,7 @@ def _simple_doc() -> dict[str, Any]:
 
 def _settings() -> RunSettings:
     return RunSettings(
-        system_prompt="unused for google",
+        system_prompt="shared editorial policy",
         model="claude-sonnet-4-6",
         temperature=0.0,
         max_tokens=256,
@@ -193,6 +193,9 @@ class TestGooglePipeline(unittest.TestCase):
             settings=_settings(),
         )
         self.assertEqual(claude.complete_json.call_count, 1)
+        system_text = claude.complete_json.call_args.kwargs["system_text"]
+        self.assertIn("shared editorial policy", system_text)
+        self.assertIn("numbered text blocks", system_text)
         self.assertTrue(result.last_run_ok)
         self.assertFalse(result.condense_succeeded)
         self.assertEqual(drive.copies[0][0], "orig")

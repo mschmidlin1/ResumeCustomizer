@@ -24,29 +24,15 @@ from resume_customizer.auth_cookies import (
     verify_oauth_state_cookie,
 )
 from resume_customizer.google_auth import credentials_from_dict, credentials_to_dict
+from resume_customizer.secrets_config import get_auth_password, get_google_client_secret
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "cookie_bridge_frontend"
 _cookie_bridge = components.declare_component("rc_cookie_bridge", path=str(_FRONTEND_DIR))
 
 
 def signing_secret() -> str | None:
-    try:
-        auth = st.secrets.get("auth", {})
-        pwd = auth.get("password")
-        if pwd is not None and str(pwd).strip() != "":
-            return str(pwd).strip()
-    except Exception:
-        return None
-    return None
-
-
-def _google_client_secret() -> str | None:
-    try:
-        block = st.secrets.get("google", {})
-        secret = str(block.get("client_secret") or "").strip()
-        return secret or None
-    except Exception:
-        return None
+    """Return the shared app password used to sign browser cookies, or ``None``."""
+    return get_auth_password()
 
 
 def _read_cookie(name: str) -> str | None:
@@ -71,7 +57,7 @@ def restore_from_cookies() -> None:
         st.session_state.authenticated = True
     if not st.session_state.get("google_token"):
         payload = verify_google_cookie(_read_cookie(GOOGLE_COOKIE_NAME), secret)
-        client_secret = _google_client_secret()
+        client_secret = get_google_client_secret()
         if payload and client_secret:
             token_dict = token_dict_from_browser_credentials(payload["creds"], client_secret)
             try:
@@ -79,7 +65,7 @@ def restore_from_cookies() -> None:
                 st.session_state.google_token = credentials_to_dict(creds)
                 st.session_state.google_email = payload.get("email") or ""
             except Exception:
-                pass
+                st.caption("Could not restore Google sign-in from cookies; Connect Google again if needed.")
     if not st.session_state.get("google_token") and not st.session_state.get("google_oauth_state"):
         handshake = verify_oauth_state_cookie(_read_cookie(OAUTH_STATE_COOKIE_NAME), secret)
         if handshake:

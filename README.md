@@ -2,6 +2,8 @@
 
 This repo is a small **Streamlit** app that tailors a resume to a job description using the **Anthropic (Claude) API**. **LaTeX** (`.tex`) is compiled with **pdfLaTeX** and returned as `.tex` + `.pdf`. **Google Docs** (optional) uses Connect Google + a Drive picker, copies the Doc into a `ResumeCustomizer` folder, edits via the Docs API, and checks page count by exporting PDF through Drive.
 
+For module layout and data flow, see [docs/architecture.md](docs/architecture.md). Word (`.docx`) is **not** implemented yet ([docs/worddocs_plan.md](docs/worddocs_plan.md)); the Google Docs plan ([docs/gdocs_plan.md](docs/gdocs_plan.md)) is historical.
+
 ## Setup
 
 1. Copy [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example) to `.streamlit/secrets.toml`.
@@ -99,7 +101,13 @@ python -m unittest discover -s tests -v
 
 Tests use `unittest` and mocks; they do not call the live Anthropic API.
 
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the entrypoint → editors → Claude → ledger map.
+
 ## Notes
 
+- **Implemented formats:** LaTeX (`.tex`) and Google Docs. Word is planned only ([docs/worddocs_plan.md](docs/worddocs_plan.md)).
 - **Single self-contained `.tex`:** The compiler runs one file in a temp directory. Projects that rely on `\\input` of other local files or assets are not fully supported in this version.
 - **Model list** in the app sidebar uses Anthropic model ids (see `MODEL_OPTIONS` in `src/app.py`).
+- **Ledger import:** `python scripts/import_ledger_to_mongo.py` (with `PYTHONPATH=src` and `MONGODB_URI`) loads the legacy JSON ledger into MongoDB.

@@ -1,4 +1,9 @@
-"""CLI: import existing JSON cost ledger into MongoDB (requires ``MONGODB_URI``)."""
+"""CLI: import existing JSON cost ledger into MongoDB (requires ``MONGODB_URI``).
+
+Prefer the thin wrapper at ``scripts/import_ledger_to_mongo.py`` from the repo root.
+This module remains importable as ``python -m resume_customizer.import_ledger_to_mongo``
+when ``src`` is on ``PYTHONPATH``.
+"""
 
 from __future__ import annotations
 

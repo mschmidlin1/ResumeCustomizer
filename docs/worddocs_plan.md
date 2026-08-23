@@ -1,4 +1,7 @@
-# Word (.docx) editor — implementation plan
+# Word (.docx) editor — implementation plan (not implemented)
+
+> **Status: next / not implemented.** The live app accepts **`.tex` uploads** and **Google Docs** only.
+> `.docx` is rejected in dispatch until this plan ships. See [architecture.md](architecture.md).
 
 This spec adds a **Microsoft Word** resume source alongside LaTeX. Visitors sign in with the existing shared app password and use the existing Anthropic key. They upload a `.docx`, and download a **new** customized `.docx`. Google Docs users who already exported to Word can use this path; native Google Docs (Connect + Picker, no Word conversion) is a separate plan: [gdocs_plan.md](gdocs_plan.md).
 

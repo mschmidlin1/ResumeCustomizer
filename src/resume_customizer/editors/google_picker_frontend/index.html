@@ -74,6 +74,7 @@
           document.getElementById("pick").hidden = true;
           Streamlit.setFrameHeight(PICKER_HEIGHT);
           const width = Math.max(window.innerWidth - 8, 320);
+          // Keep in sync with resume_customizer.google_docs_ops.GOOGLE_DOC_MIME
           const view = new google.picker.DocsView()
             .setMimeTypes("application/vnd.google-apps.document")
             .setMode(google.picker.DocsViewMode.LIST);

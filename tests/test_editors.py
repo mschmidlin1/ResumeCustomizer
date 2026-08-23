@@ -26,9 +26,9 @@ class TestResolveResumeSource(unittest.TestCase):
         self.assertEqual(handle.editor_id, "latex")
         self.assertEqual(handle.upload_bytes, b"\\documentclass{article}")
 
-    def test_docx_upload(self) -> None:
-        handle = resolve_resume_source(google_file=None, uploaded_name="cv.docx", uploaded_bytes=b"PK")
-        self.assertEqual(handle.editor_id, "docx")
+    def test_docx_upload_rejected(self) -> None:
+        with self.assertRaises(UnsupportedUploadError):
+            resolve_resume_source(google_file=None, uploaded_name="cv.docx", uploaded_bytes=b"PK")
 
     def test_google_only(self) -> None:
         handle = resolve_resume_source(

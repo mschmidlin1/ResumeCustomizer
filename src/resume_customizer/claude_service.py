@@ -1,4 +1,9 @@
-"""Call the Anthropic Messages API to tailor a LaTeX resume to a job description."""
+"""Call the Anthropic Messages API to tailor a resume to a job description.
+
+LaTeX customize/condense routes through :meth:`ClaudeCustomizationService.complete_json`
+(with a JSON schema when the installed SDK supports ``output_config``).
+``_create_message`` reshuffles kwargs for Anthropic SDK 0.x vs 1.x differences.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from anthropic.types import Message
 
 from resume_customizer.parsing import CustomizationPayload, parse_customization_payload
 from resume_customizer.pricing import estimate_message_cost_usd
+from resume_customizer.prompts import LATEX_JSON_SCHEMA, compose_latex_system_prompt
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,24 +27,6 @@ class CustomizationUsage:
     input_tokens: int
     output_tokens: int
     estimated_cost_usd: float | None
-
-
-_JSON_ONLY_SYSTEM_SUFFIX: str = (
-    "\n\nYou MUST respond with ONLY a single JSON object and no other text or markdown. "
-    'The object must have exactly two keys: "job_title" (a short string for a filename, '
-    'describing the role) and "customized_latex" (the full standalone LaTeX source for '
-    "the tailored resume)."
-)
-
-_CONDENSE_SYSTEM_SUFFIX: str = (
-    "\n\nAdditional instructions for this turn only: The user message includes a LaTeX resume that "
-    "compiles to too many PDF pages. Revise CUSTOMIZED_LATEX so that pdfLaTeX produces at most "
-    "TARGET_PDF_PAGE_COUNT pages (see the user message for the exact target and current page count). "
-    "Shorten by merging bullets, tightening phrasing, and removing non-essential words. Do not remove "
-    "factual claims, employers, dates, degrees, or tools the candidate actually used; do not invent content. "
-    "Prefer editing existing lines over adding new ones. Avoid changing \\documentclass, geometry, font size, "
-    "or list spacing unless there is no other way to meet the page target."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,25 +85,21 @@ class ClaudeCustomizationService:
             anthropic.APIError: On transport or API-level failures from the SDK.
             resume_customizer.parsing.CustomizationParseError: If the reply is not valid JSON.
         """
-        system_text = (system_prompt or "").strip() + _JSON_ONLY_SYSTEM_SUFFIX
+        system_text = compose_latex_system_prompt(system_prompt, condense=False)
         user_content = _build_user_message(
             job_description=job_description,
             resume_latex=resume_latex,
             source_pdf_page_count=source_pdf_page_count,
         )
-
-        message = _create_message(
-            self._client,
+        raw_text, usage = self.complete_json(
+            system_text=system_text,
+            user_content=user_content,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=system_text,
-            messages=[{"role": "user", "content": user_content}],
+            json_schema=LATEX_JSON_SCHEMA,
         )
-
-        raw_text = _extract_text_block(message)
         payload = parse_customization_payload(raw_text)
-        usage = _usage_from_message(model=model, message=message)
         return ClaudeCustomizationResult(payload=payload, raw_response_text=raw_text, usage=usage)
 
     def condense_resume_to_page_budget(
@@ -149,26 +133,22 @@ class ClaudeCustomizationService:
             anthropic.APIError: On transport or API-level failures from the SDK.
             resume_customizer.parsing.CustomizationParseError: If the reply is not valid JSON.
         """
-        system_text = (system_prompt or "").strip() + _CONDENSE_SYSTEM_SUFFIX + _JSON_ONLY_SYSTEM_SUFFIX
+        system_text = compose_latex_system_prompt(system_prompt, condense=True)
         user_content = _build_condense_user_message(
             job_description=job_description,
             customized_latex=customized_latex,
             target_pdf_page_count=target_pdf_page_count,
             measured_pdf_page_count=measured_pdf_page_count,
         )
-
-        message = _create_message(
-            self._client,
+        raw_text, usage = self.complete_json(
+            system_text=system_text,
+            user_content=user_content,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=system_text,
-            messages=[{"role": "user", "content": user_content}],
+            json_schema=LATEX_JSON_SCHEMA,
         )
-
-        raw_text = _extract_text_block(message)
         payload = parse_customization_payload(raw_text)
-        usage = _usage_from_message(model=model, message=message)
         return ClaudeCustomizationResult(payload=payload, raw_response_text=raw_text, usage=usage)
 
     def complete_json(

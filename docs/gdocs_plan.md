@@ -1,4 +1,7 @@
-# Google Docs editor — implementation plan
+# Google Docs editor — implementation plan (historical)
+
+> **Status: done.** Google Docs Connect + Picker + customize/condense shipped in the app.
+> Keep this file for design history. Current architecture: [architecture.md](architecture.md).
 
 This spec adds a **Google Docs** resume source alongside LaTeX. Visitors sign in with the existing shared app password and use the existing Anthropic key. They **Connect Google** with *their* account, pick a Doc from Drive, and get a **new** customized Doc. The original is never overwritten.
 

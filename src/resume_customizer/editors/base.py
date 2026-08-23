@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
-from resume_customizer.claude_service import ClaudeCustomizationService
+from resume_customizer.claude_service import ClaudeCustomizationService, CustomizationUsage
+
+# Single usage type end-to-end (Claude call + cost ledger row).
+LedgerUsage = CustomizationUsage
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,16 +23,6 @@ class RunSettings:
 
 
 @dataclass(frozen=True, slots=True)
-class LedgerUsage:
-    """One Anthropic call to persist on the cost ledger."""
-
-    model: str
-    input_tokens: int
-    output_tokens: int
-    estimated_cost_usd: float | None
-
-
-@dataclass(frozen=True, slots=True)
 class SourceHandle:
     """Opaque resume source selected in the UI."""
 
@@ -39,7 +32,7 @@ class SourceHandle:
     google_file_id: str = ""
     google_file_name: str = ""
     google_mime_type: str = ""
-    google_credentials: dict[str, Any] = field(default_factory=dict)
+    google_credentials: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

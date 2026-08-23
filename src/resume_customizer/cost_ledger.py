@@ -1,4 +1,9 @@
-"""Append-only JSON ledger of estimated API costs per customization run."""
+"""JSON cost ledger helpers for import/migration only.
+
+The live Streamlit app persists spend via :mod:`resume_customizer.cost_ledger_mongo`.
+Functions such as :func:`append_entry` and full-file JSON writes remain for the
+``scripts/import_ledger_to_mongo.py`` migration path and offline tooling.
+"""
 
 from __future__ import annotations
 
