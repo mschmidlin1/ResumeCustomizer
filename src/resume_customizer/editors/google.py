@@ -6,11 +6,11 @@ from typing import Any
 
 import streamlit as st
 
-from resume_customizer.auth_cookies import (
+from resume_lib.auth_cookies import (
     sign_oauth_handshake_state,
     verify_oauth_handshake_state,
 )
-from resume_customizer.browser_auth import render_connect_google_button, signing_secret
+from resume_lib.browser_auth import render_connect_google_button, signing_secret
 from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.editors.base import EditorRunResult, RunSettings, SourceHandle
 from resume_customizer.editors.google_picker import google_doc_picker
@@ -24,7 +24,7 @@ from resume_customizer.google_auth import (
 )
 from resume_customizer.google_docs_ops import GOOGLE_DOC_MIME
 from resume_customizer.google_pipeline import run_google_customization
-from resume_customizer.secrets_config import get_google_secrets
+from resume_lib.secrets_config import get_google_secrets
 
 
 def clear_google_session() -> None:

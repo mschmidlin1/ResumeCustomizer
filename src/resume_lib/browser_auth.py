@@ -8,7 +8,8 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 
-from resume_customizer.auth_cookies import (
+from resume_customizer.google_auth import credentials_from_dict, credentials_to_dict
+from resume_lib.auth_cookies import (
     APP_COOKIE_NAME,
     APP_MAX_AGE_SECONDS,
     GOOGLE_COOKIE_NAME,
@@ -23,8 +24,7 @@ from resume_customizer.auth_cookies import (
     verify_google_cookie,
     verify_oauth_state_cookie,
 )
-from resume_customizer.google_auth import credentials_from_dict, credentials_to_dict
-from resume_customizer.secrets_config import get_auth_password, get_google_client_secret
+from resume_lib.secrets_config import get_auth_password, get_google_client_secret
 
 _FRONTEND_DIR = Path(__file__).resolve().parent / "cookie_bridge_frontend"
 _cookie_bridge = components.declare_component("rc_cookie_bridge", path=str(_FRONTEND_DIR))

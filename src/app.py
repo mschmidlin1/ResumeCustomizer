@@ -1,4 +1,4 @@
-"""Streamlit entrypoint: resume customizer UI with LaTeX and Google Docs editors."""
+"""Streamlit entrypoint: resume customizer and Textkernel score tabs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 import streamlit as st
 
-from resume_customizer.browser_auth import restore_from_cookies, sync_cookies
+from resume_lib.browser_auth import restore_from_cookies, sync_cookies
 from resume_customizer.claude_service import ClaudeCustomizationService
 from resume_customizer.cost_ledger import CostLedgerEntry, ledger_entry_now
 from resume_customizer.cost_ledger_mongo import CostLedgerMongoService
@@ -21,7 +21,9 @@ from resume_customizer.editors.google import clear_google_session
 from resume_customizer.editors.registry import get_editor
 from resume_customizer.pricing import combine_estimated_run_cost_usd, format_usd_display, model_has_list_price
 from resume_customizer.prompts import DEFAULT_SYSTEM_PROMPT
-from resume_customizer.secrets_config import get_anthropic_api_key, get_auth_password
+from resume_lib.secrets_config import get_anthropic_api_key, get_auth_password, get_textkernel_secrets
+from resume_scorer.ledger import ScorerLedgerMongoService
+from resume_scorer.ui import render_score_tab
 
 MODEL_OPTIONS: list[str] = [
     "claude-sonnet-4-6",
@@ -35,10 +37,21 @@ def _cached_cost_ledger_mongo(uri: str, db: str) -> CostLedgerMongoService:
     return CostLedgerMongoService.from_uri(uri, db)
 
 
+@st.cache_resource
+def _cached_scorer_ledger_mongo(uri: str, db: str) -> ScorerLedgerMongoService:
+    return ScorerLedgerMongoService.from_uri(uri, db)
+
+
 def _ledger_mongo_service() -> CostLedgerMongoService:
     uri = os.environ["MONGODB_URI"].strip()
     db = (os.environ.get("RESUME_CUSTOMIZER_DB") or "resume_customizer").strip()
     return _cached_cost_ledger_mongo(uri, db)
+
+
+def _scorer_ledger_mongo_service() -> ScorerLedgerMongoService:
+    uri = os.environ["MONGODB_URI"].strip()
+    db = (os.environ.get("RESUME_SCORER_DB") or "resume_scorer").strip()
+    return _cached_scorer_ledger_mongo(uri, db)
 
 
 def _persist_ledger_entry(entry: CostLedgerEntry) -> None:
@@ -60,13 +73,16 @@ def _init_session_state() -> None:
         st.session_state.settings_max_tokens = 4096
     if "last_editor_result" not in st.session_state:
         st.session_state.last_editor_result = None
+    if "last_score_result" not in st.session_state:
+        st.session_state.last_score_result = None
     if st.session_state.settings_model not in MODEL_OPTIONS:
         st.session_state.settings_model = MODEL_OPTIONS[0]
 
 
 def _reset_outputs() -> None:
-    """Clear the last editor run from session state."""
+    """Clear customization and score outputs (used on sign-out)."""
     st.session_state.last_editor_result = None
+    st.session_state.last_score_result = None
 
 
 def _show_result_messages(result: EditorRunResult) -> None:
@@ -118,7 +134,8 @@ def render_public_home() -> None:
     st.title("Resume Customizer")
     st.write(
         "Resume Customizer is a small web app that tailors an existing resume to a job "
-        "description using Anthropic’s Claude models."
+        "description using Anthropic’s Claude models, and can score a PDF resume against "
+        "a job posting using Textkernel."
     )
     st.write(
         "You can upload a LaTeX `.tex` resume, or connect Google and pick a Google Doc. "
@@ -178,8 +195,13 @@ def render_privacy_policy() -> None:
         "by that API."
     )
     st.write(
-        "**Logs and cost records.** Estimated API usage may be stored to track spend. "
-        "Google account tokens are not stored in that ledger."
+        "**Textkernel.** On the Score tab, the PDF resume and job description are sent to "
+        "Textkernel’s Tx Platform to parse and score the match. Do not upload documents you "
+        "do not want processed by that API."
+    )
+    st.write(
+        "**Logs and cost records.** Estimated Claude usage and Textkernel credit counts may "
+        "be stored to track spend. Google account tokens are not stored in those ledgers."
     )
     st.write("Questions: use the support email listed on the Google sign-in screen for this app.")
 
@@ -197,6 +219,8 @@ def render_sidebar() -> None:
         api_key_ok = get_anthropic_api_key() is not None
         if not api_key_ok:
             st.warning("Add `[anthropic]` `api_key` to `.streamlit/secrets.toml` to run customization.")
+        if get_textkernel_secrets() is None:
+            st.warning("Add `[textkernel]` `account_id` and `service_key` to `.streamlit/secrets.toml` to run scoring.")
 
         with st.expander("Settings", expanded=False):
             st.session_state.settings_prompt = st.text_area(
@@ -236,6 +260,15 @@ def render_sidebar() -> None:
         st.metric("Total est. API spend", format_usd_display(total_spend))
         st.caption("Estimated from each run’s token usage and list prices (MongoDB).")
 
+        scorer_ledger = _scorer_ledger_mongo_service()
+        tx_used = scorer_ledger.get_total_credits()
+        st.metric("Textkernel credits used", f"{tx_used:g}")
+        remaining = scorer_ledger.get_latest_credits_remaining()
+        if remaining is not None:
+            st.caption(f"Last known Textkernel remaining: {remaining:g} (from the most recent score run).")
+        else:
+            st.caption("Sum of credits charged by this tool’s score runs (MongoDB).")
+
 
 def render_main() -> None:
     """Render two-column source controls, run action, and editor outputs."""
@@ -273,7 +306,7 @@ def render_main() -> None:
         run_clicked = st.button("Run", type="primary")
 
     if run_clicked:
-        _reset_outputs()
+        st.session_state.last_editor_result = None
         api_key = get_anthropic_api_key()
         if api_key is None:
             st.error("Anthropic API key is not configured. Set `[anthropic]` `api_key` in `.streamlit/secrets.toml`.")
@@ -362,7 +395,11 @@ def main() -> None:
         sync_cookies()
         return
 
-    render_main()
+    tab_customize, tab_score = st.tabs(["Customize", "Score"])
+    with tab_customize:
+        render_main()
+    with tab_score:
+        render_score_tab(_scorer_ledger_mongo_service())
     render_sidebar()
     sync_cookies()
 

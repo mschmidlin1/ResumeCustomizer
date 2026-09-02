@@ -1,11 +1,11 @@
-"""Tests for :mod:`resume_customizer.auth_cookies`."""
+"""Tests for :mod:`resume_lib.auth_cookies`."""
 
 from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
 
-from resume_customizer.auth_cookies import (
+from resume_lib.auth_cookies import (
     APP_MAX_AGE_SECONDS,
     browser_credentials_from_token_dict,
     sign_app_cookie,
@@ -52,9 +52,9 @@ class TestSignedCookies(unittest.TestCase):
         self.assertIsNone(verify_oauth_state_cookie(value, "nope"))
 
     def test_expired_payload_rejected(self) -> None:
-        with patch("resume_customizer.auth_cookies.time.time", return_value=1_000):
+        with patch("resume_lib.auth_cookies.time.time", return_value=1_000):
             value = sign_payload({"ok": True}, "secret")
-        with patch("resume_customizer.auth_cookies.time.time", return_value=1_000 + APP_MAX_AGE_SECONDS + 120):
+        with patch("resume_lib.auth_cookies.time.time", return_value=1_000 + APP_MAX_AGE_SECONDS + 120):
             self.assertIsNone(verify_payload(value, "secret", max_age_seconds=APP_MAX_AGE_SECONDS))
 
     def test_google_cookie_omits_client_secret(self) -> None:

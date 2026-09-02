@@ -45,6 +45,8 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_APP_ID: ${{ secrets.GOOGLE_APP_ID }}
           GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
+          TEXTKERNEL_ACCOUNT_ID: ${{ secrets.TEXTKERNEL_ACCOUNT_ID }}
+          TEXTKERNEL_SERVICE_KEY: ${{ secrets.TEXTKERNEL_SERVICE_KEY }}
         run: |
           toml="$(mktemp)"
           trap 'rm -f "$toml"' EXIT
@@ -73,6 +75,14 @@ jobs:
                   f'api_key = "{esc(os.environ.get("GOOGLE_API_KEY", ""))}"',
                   f'app_id = "{esc(os.environ.get("GOOGLE_APP_ID", ""))}"',
                   f'redirect_uri = "{esc(redirect)}"',
+              ]
+          tk_id = os.environ.get("TEXTKERNEL_ACCOUNT_ID", "").strip()
+          if tk_id:
+              lines += [
+                  "",
+                  "[textkernel]",
+                  f'account_id = "{esc(tk_id)}"',
+                  f'service_key = "{esc(os.environ.get("TEXTKERNEL_SERVICE_KEY", ""))}"',
               ]
           Path(os.environ["TOML_PATH"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY

@@ -29,6 +29,8 @@ spec:
                 secretKeyRef:
                   name: resume-customizer-secrets
                   key: RESUME_CUSTOMIZER_DB
+            - name: RESUME_SCORER_DB
+              value: resume_scorer
           volumeMounts:
             - name: streamlit-secrets
               mountPath: /app/.streamlit/secrets.toml

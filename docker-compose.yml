@@ -8,3 +8,4 @@ services:
     environment:
       MONGODB_URI: "mongodb://192.168.50.116:27017"
       RESUME_CUSTOMIZER_DB: "resume_customizer"
+      RESUME_SCORER_DB: "resume_scorer"

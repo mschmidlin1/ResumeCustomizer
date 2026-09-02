@@ -1,6 +1,9 @@
 # ResumeCustomizer
 
-This repo is a small **Streamlit** app that tailors a resume to a job description using the **Anthropic (Claude) API**. **LaTeX** (`.tex`) is compiled with **pdfLaTeX** and returned as `.tex` + `.pdf`. **Google Docs** (optional) uses Connect Google + a Drive picker, copies the Doc into a `ResumeCustomizer` folder, edits via the Docs API, and checks page count by exporting PDF through Drive.
+This repo is a **Streamlit** app with two tabs after sign-in:
+
+- **Customize** — tailors a resume to a job description using the **Anthropic (Claude) API**. **LaTeX** (`.tex`) is compiled with **pdfLaTeX** and returned as `.tex` + `.pdf`. **Google Docs** (optional) uses Connect Google + a Drive picker, copies the Doc into a `ResumeCustomizer` folder, edits via the Docs API, and checks page count by exporting PDF through Drive.
+- **Score** — uploads a PDF resume and a pasted job description, then scores the match with the **Textkernel Tx Platform** (formerly Sovren). Setup, email forwarding, credits, and API details: [docs/textkernel.md](docs/textkernel.md).
 
 For module layout and data flow, see [docs/architecture.md](docs/architecture.md). Word (`.docx`) is **not** implemented yet ([docs/worddocs_plan.md](docs/worddocs_plan.md)); the Google Docs plan ([docs/gdocs_plan.md](docs/gdocs_plan.md)) is historical.
 
@@ -10,15 +13,16 @@ For module layout and data flow, see [docs/architecture.md](docs/architecture.md
 2. Set `[auth]` `password` for the app sign-in page.
 3. Set `[anthropic]` `api_key` to your [Anthropic API key](https://console.anthropic.com/).
 4. Optional: set `[google]` keys (see the example file) to enable **Connect Google** and the Drive picker. Add OAuth redirect URIs for `http://localhost:8501` and the deployed host.
-5. Install a LaTeX distribution (**MiKTeX** or **TeX Live**) so `pdflatex` is on your `PATH` (required for LaTeX PDF validation and the PDF download).
-6. Create a virtual environment (`python -m venv .venv`), activate it, then install dependencies:
+5. Optional for the **Score** tab: set `[textkernel]` keys. Gmail cannot be used for Tx Console signup; this repo uses `michael@schmidlin.casa` forwarded to Gmail. Follow [docs/textkernel.md](docs/textkernel.md).
+6. Install a LaTeX distribution (**MiKTeX** or **TeX Live**) so `pdflatex` is on your `PATH` (required for LaTeX PDF validation and the PDF download).
+7. Create a virtual environment (`python -m venv .venv`), activate it, then install dependencies:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-7. Set **`MONGODB_URI`** (and optionally **`RESUME_CUSTOMIZER_DB`**) in the environment; see [`.vscode/launch.json`](.vscode/launch.json) for example values used when debugging.
-8. Run the app from the repo root (so `src` can be resolved):
+8. Set **`MONGODB_URI`** (and optionally **`RESUME_CUSTOMIZER_DB`** and **`RESUME_SCORER_DB`**) in the environment; see [`.vscode/launch.json`](.vscode/launch.json) for example values used when debugging.
+9. Run the app from the repo root (so `src` can be resolved):
 
    ```bash
    streamlit run src/app.py
@@ -32,11 +36,11 @@ For module layout and data flow, see [docs/architecture.md](docs/architecture.md
    streamlit run src/app.py
    ```
 
-   Or use the **ResumeCustomizer: Streamlit (Debug)** / **(Run)** configurations in [`.vscode/launch.json`](.vscode/launch.json), which set `PYTHONPATH`, `MONGODB_URI`, and `RESUME_CUSTOMIZER_DB`.
+   Or use the **ResumeCustomizer: Streamlit (Debug)** / **(Run)** configurations in [`.vscode/launch.json`](.vscode/launch.json), which set `PYTHONPATH`, `MONGODB_URI`, `RESUME_CUSTOMIZER_DB`, and `RESUME_SCORER_DB`.
 
 ## Docker
 
-The image uses **Python 3.11** on **Debian Bookworm**, installs **pdfLaTeX** via TeX Live packages, and sets `PYTHONPATH` so `resume_customizer` imports resolve. Do not bake real credentials into the image; mount `.streamlit/secrets.toml` at run time.
+The image uses **Python 3.11** on **Debian Bookworm**, installs **pdfLaTeX** via TeX Live packages, and sets `PYTHONPATH` so `resume_customizer`, `resume_lib`, and `resume_scorer` imports resolve. Do not bake real credentials into the image; mount `.streamlit/secrets.toml` at run time.
 
 **Build** (from the repo root):
 
@@ -62,7 +66,7 @@ docker run --rm -p 8501:8501 `
   resume-customizer:latest
 ```
 
-Set `RESUME_CUSTOMIZER_DB` if you want a database name other than the default (`resume_customizer`).
+Set `RESUME_CUSTOMIZER_DB` if you want a customization-ledger database name other than the default (`resume_customizer`). Set `RESUME_SCORER_DB` for the Textkernel usage database (default `resume_scorer`).
 
 Then open [http://localhost:8501](http://localhost:8501).
 
@@ -99,11 +103,11 @@ From the repo root with `PYTHONPATH=src` (or equivalent):
 python -m unittest discover -s tests -v
 ```
 
-Tests use `unittest` and mocks; they do not call the live Anthropic API.
+Tests use `unittest` and mocks; they do not call the live Anthropic or Textkernel APIs.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for the entrypoint → editors → Claude → ledger map.
+See [docs/architecture.md](docs/architecture.md) for the entrypoint → editors → Claude → ledger map. Score-tab API, email, and credits: [docs/textkernel.md](docs/textkernel.md).
 
 ## Notes
 

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, TypedDict
 
 import streamlit as st
+
+
+class TextkernelSecrets(TypedDict):
+    """Tx Platform credentials (data center and parse flags live in resume_scorer.settings)."""
+
+    account_id: str
+    service_key: str
 
 
 def _secrets_block(name: str) -> Mapping[str, Any] | None:
@@ -75,3 +82,18 @@ def get_google_client_secret() -> str | None:
         return None
     secret = str(block.get("client_secret") or "").strip()
     return secret or None
+
+
+def get_textkernel_secrets() -> TextkernelSecrets | None:
+    """Return ``[textkernel]`` credentials, or ``None`` if account_id/service_key missing."""
+    block = _secrets_block("textkernel")
+    if block is None:
+        return None
+    account_id = str(block.get("account_id") or "").strip()
+    service_key = str(block.get("service_key") or "").strip()
+    if not account_id or not service_key:
+        return None
+    return {
+        "account_id": account_id,
+        "service_key": service_key,
+    }
