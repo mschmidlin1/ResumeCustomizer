@@ -46,8 +46,18 @@ class TestTxClient(unittest.TestCase):
         encoded = kwargs["json"]["DocumentAsBase64String"]
         self.assertEqual(base64.b64decode(encoded), b"%PDF-1.4 fake")
         self.assertRegex(kwargs["json"]["DocumentLastModified"], r"^\d{4}-\d{2}-\d{2}$")
-        self.assertNotIn("SkillsSettings", kwargs["json"])
+        self.assertEqual(kwargs["json"]["SkillsSettings"], {"Normalize": True, "TaxonomyVersion": "V2"})
         self.assertNotIn("ProfessionsSettings", kwargs["json"])
+
+    def test_parse_omits_skills_settings_when_disabled(self) -> None:
+        client = TxClient("acct", "key", normalize_skills=False, http=self.http)
+        self.http.post.return_value = _response(
+            200,
+            {"Info": {"Code": "Success", "TransactionCost": 1.0}, "Value": {"JobData": {"JobTitle": "X"}}},
+        )
+        client.parse_job("Need Python")
+        payload = self.http.post.call_args.kwargs["json"]
+        self.assertNotIn("SkillsSettings", payload)
 
     def test_parse_options_when_flags_enabled(self) -> None:
         client = TxClient(

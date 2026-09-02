@@ -76,12 +76,14 @@ Job-as-source (`bimetric/joborder`) is the right direction for “how well does 
 
 ## Data center and parse add-on flags
 
-Edit [`src/resume_scorer/settings.py`](../src/resume_scorer/settings.py) and restart Streamlit. `DATA_CENTER` must match the Tx Console account (`US`, `EU`, or `AU`). Both add-ons default **off**.
+Edit [`src/resume_scorer/settings.py`](../src/resume_scorer/settings.py) and restart Streamlit. `DATA_CENTER` must match the Tx Console account (`US`, `EU`, or `AU`).
+
+New Tx accounts default to **skills taxonomy V2**. Bimetric scoring (Search & Match) refuses those parsed documents unless skills were normalized, with: `When using the V2 skills with Tx Search & Match you must also use skills normalization.` So `NORMALIZE_SKILLS` stays **on**. Turning it off saves 0.1 credits per parse but scoring will fail.
 
 | Flag | Tx request | Extra cost | What it does |
 |------|------------|------------|----------------|
-| `NORMALIZE_SKILLS` | `SkillsSettings.Normalize` + taxonomy V2 | +0.1 per parse | Maps skill synonyms (e.g. JS vs JavaScript). Helps matched/missing skills. |
-| `NORMALIZE_JOB_TITLES` | `ProfessionsSettings.Normalize` | +0.2 per parse | Profession taxonomy on recent titles. Bimetric already does some title variation matching without this. |
+| `NORMALIZE_SKILLS` | `SkillsSettings.Normalize` + taxonomy V2 | +0.1 per parse | Required for scoring on V2 accounts. Maps skill synonyms (e.g. JS vs JavaScript). |
+| `NORMALIZE_JOB_TITLES` | `ProfessionsSettings.Normalize` | +0.2 per parse | Optional. Profession taxonomy on recent titles. Bimetric already does some title variation matching without this. |
 
 Geocoding and the LLM parser are **not** wired. OCR for scanned PDFs is a Tx Console setting, not an app flag.
 

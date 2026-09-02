@@ -53,7 +53,7 @@ class TxClient:
         service_key: str,
         data_center: str = "US",
         *,
-        normalize_skills: bool = False,
+        normalize_skills: bool = True,
         normalize_job_titles: bool = False,
         timeout: float = 120.0,
         http: httpx.Client | None = None,
@@ -100,6 +100,8 @@ class TxClient:
 
     def _parse_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
+        # New Tx accounts default to V2 skills. Bimetric scoring rejects those
+        # parses unless SkillsSettings.Normalize is true.
         if self._normalize_skills:
             options["SkillsSettings"] = {"Normalize": True, "TaxonomyVersion": "V2"}
         if self._normalize_job_titles:
